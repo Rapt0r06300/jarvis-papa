@@ -135,7 +135,7 @@ jobs:
           if (-not (Test-Path $iscc)) { throw "Inno Setup compiler not found" }
           & $iscc "packaging\JarvisPapa.iss"
 
-      - name: Smoke test installer, installed EXE and uninstaller
+      - name: Clean Windows install uninstall reinstall E2E
         shell: pwsh
         env:
           QT_QPA_PLATFORM: offscreen
@@ -143,41 +143,64 @@ jobs:
         run: |
           $setup = (Resolve-Path "installer-output\JarvisPapa-Setup.exe").Path
           $installDir = Join-Path $env:RUNNER_TEMP "JarvisPapaInstalled"
+          $legacyEnv = Join-Path $env:LOCALAPPDATA "JarvisPapa\.env"
           Remove-Item $installDir -Recurse -Force -ErrorAction SilentlyContinue
-          $installer = Start-Process -FilePath $setup -ArgumentList @(
-            "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/DIR=$installDir"
-          ) -Wait -PassThru
-          if ($installer.ExitCode -ne 0) { throw "Installer failed with code $($installer.ExitCode)" }
-          $installedExe = Join-Path $installDir "JarvisPapa.exe"
-          if (-not (Test-Path $installedExe)) { throw "Installed JarvisPapa.exe is missing" }
-          $installedQwenWorker = Join-Path $installDir "_internal\jarvis_papa\voice\qwen_worker.py"
-          if (-not (Test-Path $installedQwenWorker)) { throw "Installed Qwen worker is missing" }
+          Remove-Item $legacyEnv -Force -ErrorAction SilentlyContinue
 
-          $process = Start-Process -FilePath $installedExe -WorkingDirectory $installDir -PassThru
-          $healthy = $false
-          try {
-            for ($i = 0; $i -lt 60; $i++) {
-              if ($process.HasExited) { throw "Installed JarvisPapa.exe exited unexpectedly" }
-              try {
-                $health = Invoke-RestMethod -Uri "http://127.0.0.1:8765/health" -TimeoutSec 1
-                if ($health.status -eq "ok") { $healthy = $true; break }
-              } catch {
-                Start-Sleep -Milliseconds 500
-              }
-            }
-            if (-not $healthy) { throw "Installed JarvisPapa.exe never became healthy" }
-          } finally {
-            if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force }
+          function Install-Jarvis {
+            $installer = Start-Process -FilePath $setup -ArgumentList @(
+              "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/DIR=$installDir"
+            ) -Wait -PassThru
+            if ($installer.ExitCode -ne 0) { throw "Installer failed with code $($installer.ExitCode)" }
+            $installedExe = Join-Path $installDir "JarvisPapa.exe"
+            if (-not (Test-Path $installedExe)) { throw "Installed JarvisPapa.exe is missing" }
+            $installedQwenWorker = Join-Path $installDir "_internal\jarvis_papa\voice\qwen_worker.py"
+            if (-not (Test-Path $installedQwenWorker)) { throw "Installed Qwen worker is missing" }
+            if (Test-Path $legacyEnv) { throw "Fresh install recreated legacy plaintext .env" }
+            return $installedExe
           }
 
-          $uninstaller = Join-Path $installDir "unins000.exe"
-          if (-not (Test-Path $uninstaller)) { throw "Jarvis uninstaller is missing" }
-          $uninstall = Start-Process -FilePath $uninstaller -ArgumentList @(
-            "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"
-          ) -Wait -PassThru
-          if ($uninstall.ExitCode -ne 0) { throw "Uninstaller failed with code $($uninstall.ExitCode)" }
+          function Assert-JarvisHealthy([string]$installedExe) {
+            $process = Start-Process -FilePath $installedExe -WorkingDirectory $installDir -PassThru
+            $healthy = $false
+            try {
+              for ($i = 0; $i -lt 60; $i++) {
+                if ($process.HasExited) { throw "Installed JarvisPapa.exe exited unexpectedly" }
+                try {
+                  $health = Invoke-RestMethod -Uri "http://127.0.0.1:8765/health" -TimeoutSec 1
+                  if ($health.status -eq "ok") { $healthy = $true; break }
+                } catch {
+                  Start-Sleep -Milliseconds 500
+                }
+              }
+              if (-not $healthy) { throw "Installed JarvisPapa.exe never became healthy" }
+            } finally {
+              if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force }
+            }
+          }
 
-      - name: Verify Windows deliverables
+          function Uninstall-Jarvis {
+            $uninstaller = Join-Path $installDir "unins000.exe"
+            if (-not (Test-Path $uninstaller)) { throw "Jarvis uninstaller is missing" }
+            $uninstall = Start-Process -FilePath $uninstaller -ArgumentList @(
+              "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"
+            ) -Wait -PassThru
+            if ($uninstall.ExitCode -ne 0) { throw "Uninstaller failed with code $($uninstall.ExitCode)" }
+            Start-Sleep -Seconds 1
+            if (Test-Path (Join-Path $installDir "JarvisPapa.exe")) {
+              throw "JarvisPapa.exe remained after uninstall"
+            }
+          }
+
+          $firstExe = Install-Jarvis
+          Assert-JarvisHealthy $firstExe
+          Uninstall-Jarvis
+
+          $secondExe = Install-Jarvis
+          Assert-JarvisHealthy $secondExe
+          Uninstall-Jarvis
+
+      - name: Verify Windows deliverables and create checksum
         shell: pwsh
         run: |
           $files = @(
@@ -192,11 +215,16 @@ jobs:
             if ($size -lt 100000) { throw "Deliverable looks invalid: $file ($size bytes)" }
             Write-Host "OK $file - $size bytes"
           }
+          $hash = (Get-FileHash "installer-output\JarvisPapa-Setup.exe" -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  JarvisPapa-Setup.exe" | Set-Content "installer-output\JarvisPapa-Setup.exe.sha256" -Encoding ascii
+          Write-Host "SHA256 $hash"
 
-      - name: Upload single Windows installer
+      - name: Upload final Windows installer
         uses: actions/upload-artifact@v4
         with:
           name: JarvisPapa-Setup-0.6.0
-          path: installer-output/JarvisPapa-Setup.exe
+          path: |
+            installer-output/JarvisPapa-Setup.exe
+            installer-output/JarvisPapa-Setup.exe.sha256
           if-no-files-found: error
           retention-days: 30
