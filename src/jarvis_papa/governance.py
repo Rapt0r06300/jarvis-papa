@@ -153,7 +153,6 @@ class KillSwitch:
         return self.status()
 
     def clear(self) -> dict[str, object]:
-        # Deactivation must only be exposed through a separately authorized route.
         self._write({"active": False, "reason": "", "activated_at": None})
         return self.status()
 
@@ -164,7 +163,6 @@ class KillSwitch:
             except FileNotFoundError:
                 return {"active": False, "reason": "", "activated_at": None}
             except (OSError, json.JSONDecodeError):
-                # Corrupt safety state fails closed for mutations.
                 return {
                     "active": True,
                     "reason": "État du bouton d'arrêt illisible : mutations bloquées par sécurité.",
@@ -308,17 +306,17 @@ class PolicyKernel:
                 "Une donnée externe ne peut jamais déclencher seule une modification.",
                 digest,
             )
-        if not contract.read_only or contract.risk in {
+        risky = not contract.read_only or contract.risk in {
             RiskLevel.MEDIUM,
             RiskLevel.HIGH,
             RiskLevel.CRITICAL,
-        }:
-            if not authorization_present:
-                return PolicyResult(
-                    PolicyVerdict.REQUIRE_CONFIRMATION,
-                    "Cette action modifie un état et exige les deux autorisations exactes.",
-                    digest,
-                )
+        }
+        if risky and not authorization_present:
+            return PolicyResult(
+                PolicyVerdict.REQUIRE_CONFIRMATION,
+                "Cette action modifie un état et exige les deux autorisations exactes.",
+                digest,
+            )
         return PolicyResult(PolicyVerdict.ALLOW, "Action autorisée par la politique locale.", digest)
 
     @staticmethod
