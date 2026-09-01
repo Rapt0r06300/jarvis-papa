@@ -16,6 +16,7 @@ class ThunderbirdCommand:
     context: dict[str, object] = field(default_factory=dict)
     status: str = "pending"
     error: str | None = None
+    result: dict[str, object] = field(default_factory=dict)
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
 
@@ -100,13 +101,21 @@ class ThunderbirdCommandQueue:
         with self._lock:
             return next((command for command in self._commands if command.id == command_id), None)
 
-    def acknowledge(self, command_id: str, *, ok: bool, error: str | None = None) -> bool:
+    def acknowledge(
+        self,
+        command_id: str,
+        *,
+        ok: bool,
+        error: str | None = None,
+        result: dict[str, object] | None = None,
+    ) -> bool:
         with self._lock:
             for command in self._commands:
                 if command.id != command_id:
                     continue
                 command.status = "succeeded" if ok else "failed"
                 command.error = None if ok else (error or "Erreur Thunderbird non précisée.")[:1200]
+                command.result = self._safe_result(result or {})
                 command.updated_at = time.time()
                 self._save_locked()
                 return True
@@ -119,6 +128,7 @@ class ThunderbirdCommandQueue:
                 return False
             command.status = "pending"
             command.error = None
+            command.result = {}
             command.updated_at = time.time()
             self._save_locked()
             return True
@@ -133,6 +143,26 @@ class ThunderbirdCommandQueue:
             failed = sum(item.status == "failed" for item in self._commands)
             succeeded = sum(item.status == "succeeded" for item in self._commands)
         return {"pending": pending, "failed": failed, "succeeded": succeeded}
+
+    @staticmethod
+    def _safe_result(result: dict[str, object]) -> dict[str, object]:
+        allowed = {
+            "mode",
+            "header_message_id",
+            "sent_copy_count",
+            "compose_tab_id",
+            "duplicate",
+            "verified",
+        }
+        clean: dict[str, object] = {}
+        for key, value in result.items():
+            if key not in allowed:
+                continue
+            if value is None or isinstance(value, (bool, int, float)):
+                clean[key] = value
+            elif isinstance(value, str):
+                clean[key] = value[:500]
+        return clean
 
     def _trim_locked(self) -> None:
         if len(self._commands) <= self.max_items:
@@ -154,6 +184,7 @@ class ThunderbirdCommandQueue:
             if not isinstance(item, dict):
                 continue
             try:
+                raw_result = item.get("result")
                 commands.append(
                     ThunderbirdCommand(
                         id=str(item["id"]),
@@ -162,6 +193,7 @@ class ThunderbirdCommandQueue:
                         context=dict(item.get("context") or {}),
                         status=str(item.get("status") or "pending"),
                         error=item.get("error") if isinstance(item.get("error"), str) else None,
+                        result=self._safe_result(raw_result if isinstance(raw_result, dict) else {}),
                         created_at=float(item.get("created_at") or time.time()),
                         updated_at=float(item.get("updated_at") or time.time()),
                     )
