@@ -17,14 +17,16 @@ def test_dashboard_is_available() -> None:
     assert "Jarvis est prêt" in response.text
     assert "Bonjour Robert" in response.text
     assert "Ce qui demande ton attention" in response.text
+    assert "Fais-moi le point" in response.text
 
 
 def test_status_reports_active_foundation_modules() -> None:
     response = client.get("/api/status")
     assert response.status_code == 200
     modules = response.json()["modules"]
-    assert modules["mail"] == "bridge_ready"
+    assert modules["mail"] == "thunderbird_bridge_with_attachments"
     assert modules["voice_output"] == "intelligent_policy_ready"
+    assert modules["memory"] == "sqlite_habits_ready"
 
 
 def test_write_permission_requires_confirmation() -> None:
@@ -105,6 +107,7 @@ def test_incoming_mail_creates_contextual_action_card() -> None:
     option_ids = {item["id"] for item in payload["card"]["options"]}
     assert "find-files" in option_ids
     assert "prepare-reply" in option_ids
+    assert payload["card"]["metadata"]["body"].startswith("Bonjour")
 
 
 def test_open_email_action_is_forwarded_to_thunderbird() -> None:
@@ -129,3 +132,47 @@ def test_open_email_action_is_forwarded_to_thunderbird() -> None:
     assert executed.json()["ok"] is True
     commands = client.get("/api/thunderbird/commands").json()
     assert any(command["kind"] == "open_message" for command in commands)
+
+
+def test_attachment_draft_requires_explicit_confirmation() -> None:
+    created = client.post(
+        "/api/mail/incoming",
+        json={
+            "message_id": 444,
+            "author": "Assurance Exemple",
+            "subject": "Justificatif demandé",
+            "body": "Merci de transmettre le justificatif.",
+        },
+    ).json()
+    card_id = created["card"]["id"]
+    response = client.post(
+        f"/api/actions/{card_id}/attach",
+        json={"paths": ["document.pdf"], "confirmed": False},
+    )
+    assert response.status_code == 200
+    assert response.json()["ok"] is False
+    assert response.json()["requires_confirmation"] is True
+
+
+def test_browser_agent_blocks_loopback_urls() -> None:
+    response = client.post(
+        "/api/browser/read",
+        json={"url": "http://127.0.0.1:9999/private"},
+    )
+    assert response.status_code == 200
+    assert response.json()["ok"] is False
+
+
+def test_local_memory_can_store_and_recall_a_preference() -> None:
+    saved = client.post(
+        "/api/memory/remember",
+        json={
+            "category": "preference-test",
+            "key": "courriers assurance",
+            "value": "réponses courtes",
+        },
+    )
+    assert saved.status_code == 200
+    recalled = client.get("/api/memory/recall", params={"q": "assurance"})
+    assert recalled.status_code == 200
+    assert any(item["value"] == "réponses courtes" for item in recalled.json()["results"])
