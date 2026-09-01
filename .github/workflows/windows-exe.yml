@@ -1,0 +1,111 @@
+name: Windows EXE
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "packaging/**"
+      - "thunderbird-extension/**"
+      - "pyproject.toml"
+      - ".env.example"
+      - ".github/workflows/windows-exe.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows-exe:
+    runs-on: windows-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install build dependencies
+        run: python -m pip install -e ".[build]"
+
+      - name: Generate Windows icon
+        run: python packaging/generate_icon.py
+
+      - name: Build native Jarvis desktop application
+        shell: pwsh
+        run: |
+          pyinstaller --noconfirm --clean --onedir --windowed `
+            --name Jarvis `
+            --icon packaging/jarvis.ico `
+            --paths src `
+            packaging/desktop_entry.py
+
+      - name: Build Thunderbird native host
+        shell: pwsh
+        run: |
+          pyinstaller --noconfirm --clean --onefile --console `
+            --name JarvisNativeHost `
+            --icon packaging/jarvis.ico `
+            --paths src `
+            packaging/native_host_entry.py
+
+      - name: Build diagnostic executable
+        shell: pwsh
+        run: |
+          pyinstaller --noconfirm --clean --onefile --console `
+            --name JarvisDiagnostic `
+            --icon packaging/jarvis.ico `
+            --paths src `
+            packaging/diagnostic_entry.py
+
+      - name: Package Thunderbird extension
+        shell: pwsh
+        run: |
+          $zip = "dist/jarvis-papa-thunderbird.zip"
+          $xpi = "dist/jarvis-papa-thunderbird.xpi"
+          Remove-Item $zip, $xpi -Force -ErrorAction SilentlyContinue
+          Compress-Archive -Path "thunderbird-extension/*" -DestinationPath $zip -Force
+          Move-Item $zip $xpi -Force
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+
+      - name: Build JarvisPapa-Setup.exe
+        shell: pwsh
+        run: |
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { throw "Inno Setup compiler not found" }
+          & $iscc "packaging\JarvisPapa.iss"
+
+      - name: Verify Windows deliverables
+        shell: pwsh
+        run: |
+          $files = @(
+            "dist\Jarvis\Jarvis.exe",
+            "dist\JarvisNativeHost.exe",
+            "dist\JarvisDiagnostic.exe",
+            "installer-output\JarvisPapa-Setup.exe"
+          )
+          foreach ($file in $files) {
+            if (-not (Test-Path $file)) { throw "Missing deliverable: $file" }
+            $size = (Get-Item $file).Length
+            if ($size -lt 100000) { throw "Deliverable looks invalid: $file ($size bytes)" }
+            Write-Host "OK $file - $size bytes"
+          }
+
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: JarvisPapa-Windows-0.6.0
+          path: |
+            installer-output/JarvisPapa-Setup.exe
+            dist/JarvisNativeHost.exe
+            dist/JarvisDiagnostic.exe
+            dist/jarvis-papa-thunderbird.xpi
+          if-no-files-found: error
+          retention-days: 30
