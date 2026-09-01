@@ -8,7 +8,8 @@ import time
 from dataclasses import dataclass
 
 from jarvis_papa.ai import AIUnavailable, local_ai
-from jarvis_papa.memory import Habit, MemoryItem, MemoryStore, memory_store as base_memory_store
+from jarvis_papa.memory import Habit, MemoryItem, MemoryStore
+from jarvis_papa.memory import memory_store as base_memory_store
 
 _TOKEN = re.compile(r"[\wÀ-ÿ-]{3,}", re.UNICODE)
 
@@ -99,7 +100,12 @@ class SemanticMemoryStore:
         ]
         return "\n".join(lines)
 
-    def record_action(self, action: str, target: str, metadata: dict[str, object] | None = None) -> None:
+    def record_action(
+        self,
+        action: str,
+        target: str,
+        metadata: dict[str, object] | None = None,
+    ) -> None:
         self.base.record_action(action, target, metadata)
 
     def habits(self, *, min_count: int = 3, limit: int = 12) -> list[Habit]:
