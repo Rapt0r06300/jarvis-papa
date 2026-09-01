@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from hashlib import sha256
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
@@ -124,7 +123,10 @@ def inspect_prepared_mail(card_id: str, request: DraftInspectRequest) -> dict[st
         return {
             "ok": False,
             "state": "failed",
-            "detail": "Thunderbird n'a pas fourni l'identifiant du brouillon. Prépare à nouveau le brouillon.",
+            "detail": (
+                "Thunderbird n'a pas fourni l'identifiant du brouillon. "
+                "Prépare à nouveau le brouillon."
+            ),
         }
     command = thunderbird_commands.enqueue(
         "inspect_compose",
@@ -135,7 +137,10 @@ def inspect_prepared_mail(card_id: str, request: DraftInspectRequest) -> dict[st
         "ok": True,
         "state": "partial",
         "command_id": command.id,
-        "detail": "Je vérifie le destinataire, l'objet, les pièces jointes et le contenu exact du brouillon avant de demander ton accord.",
+        "detail": (
+            "Je vérifie le destinataire, l'objet, les pièces jointes et le contenu exact du "
+            "brouillon avant de demander ton accord."
+        ),
     }
 
 
@@ -185,7 +190,9 @@ def send_prepared_mail(card_id: str, request: SendPreparedRequest) -> dict[str, 
         return {
             "ok": False,
             "state": "failed",
-            "detail": "Envoi bloqué : deux autorisations exactes et encore valides sont obligatoires.",
+            "detail": (
+                "Envoi bloqué : deux autorisations exactes et encore valides sont obligatoires."
+            ),
         }
     command = thunderbird_commands.enqueue(
         "send_reply",
@@ -210,12 +217,18 @@ def send_prepared_mail(card_id: str, request: SendPreparedRequest) -> dict[str, 
         "ok": True,
         "state": "partial",
         "command_id": command.id,
-        "detail": "J'ai demandé l'envoi à Thunderbird. Je n'annoncerai la réussite qu'après sa confirmation vérifiée.",
+        "detail": (
+            "J'ai demandé l'envoi à Thunderbird. Je n'annoncerai la réussite qu'après sa "
+            "confirmation vérifiée."
+        ),
     }
 
 
 @router.post("/thunderbird/commands/{command_id}/ack")
-def advanced_thunderbird_ack(command_id: str, request: ThunderbirdAckRequest) -> dict[str, object]:
+def advanced_thunderbird_ack(
+    command_id: str,
+    request: ThunderbirdAckRequest,
+) -> dict[str, object]:
     command = _command_or_404(command_id)
     incoming_result = request.result if isinstance(request.result, dict) else {}
     if command.status == "succeeded" and bool(incoming_result.get("duplicate")):
@@ -231,7 +244,10 @@ def advanced_thunderbird_ack(command_id: str, request: ThunderbirdAckRequest) ->
         )
         if not verified:
             ok = False
-            error = "Thunderbird n'a pas fourni une preuve suffisante d'envoi immédiat. Jarvis refuse de considérer le mail comme envoyé."
+            error = (
+                "Thunderbird n'a pas fourni une preuve suffisante d'envoi immédiat. "
+                "Jarvis refuse de considérer le mail comme envoyé."
+            )
     if command.kind == "inspect_compose" and ok:
         verified = incoming_result.get("verified") is True and bool(
             str(incoming_result.get("compose_digest") or "")
@@ -306,7 +322,11 @@ def browser_execute(request: BrowserExecuteRequest) -> dict[str, object]:
         "session_name": request.session_name,
     }
     if not _consume(request.authorization_token, "browser.execute_workflow", binding):
-        return {"ok": False, "state": "failed", "detail": "Interaction Web bloquée : double autorisation requise."}
+        return {
+            "ok": False,
+            "state": "failed",
+            "detail": "Interaction Web bloquée : double autorisation requise.",
+        }
     return browser_workflow.execute(
         raw_url=request.url,
         fields=request.fields,
@@ -329,7 +349,11 @@ def windows_file_dialog(request: WindowsDialogRequest) -> dict[str, object]:
         canonical = request.path
     binding = {"window_title": request.window_title, "path": canonical}
     if not _consume(request.authorization_token, "windows.choose_file", binding):
-        return {"ok": False, "state": "failed", "detail": "Sélection bloquée : double autorisation requise."}
+        return {
+            "ok": False,
+            "state": "failed",
+            "detail": "Sélection bloquée : double autorisation requise.",
+        }
     return windows_skills.choose_file_in_dialog(request.window_title, canonical).to_dict()
 
 
@@ -341,7 +365,11 @@ def windows_print(request: WindowsPrintRequest) -> dict[str, object]:
         canonical = request.path
     binding = {"path": canonical, "operation": "print"}
     if not _consume(request.authorization_token, "windows.print_document", binding):
-        return {"ok": False, "state": "failed", "detail": "Impression bloquée : double autorisation requise."}
+        return {
+            "ok": False,
+            "state": "failed",
+            "detail": "Impression bloquée : double autorisation requise.",
+        }
     return windows_skills.print_document(canonical).to_dict()
 
 
@@ -360,7 +388,11 @@ def repair_execute(request: RepairRequest) -> dict[str, object]:
     components = sorted({item.strip().casefold() for item in request.components if item.strip()})
     binding = {"components": components}
     if not _consume(request.authorization_token, "jarvis.repair", binding):
-        return {"ok": False, "state": "failed", "detail": "Réparation bloquée : double autorisation requise."}
+        return {
+            "ok": False,
+            "state": "failed",
+            "detail": "Réparation bloquée : double autorisation requise.",
+        }
     result = repair_service.repair(components)
     audit_log.record(
         "self_repair",
