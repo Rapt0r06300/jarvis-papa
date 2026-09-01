@@ -56,7 +56,6 @@ class SecurityPolicy:
                 confirmations_received=received,
             )
 
-        remaining = self.SENSITIVE_CONFIRMATIONS - received
         if received == 0:
             reason = (
                 "Action sensible bloquée. Robert doit confirmer une première fois, puis confirmer "
