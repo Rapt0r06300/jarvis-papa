@@ -4,8 +4,10 @@ from fastapi import HTTPException, Query
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
+from jarvis_papa.conversation import conversation_manager
 from jarvis_papa.diagnostics import diagnostics
 from jarvis_papa.routes import create_app
+from jarvis_papa.speech import SpeechEvent, speech_coordinator
 from jarvis_papa.thunderbird import thunderbird_bridge_state
 from jarvis_papa.voice import voice_service
 
@@ -22,6 +24,17 @@ class ThunderbirdHeartbeatRequest(BaseModel):
     pid: int | None = Field(default=None, ge=1)
 
 
+class ConversationTurnRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=3000)
+    conversation_id: str | None = Field(default=None, min_length=8, max_length=80)
+    request_id: str | None = Field(default=None, min_length=8, max_length=80)
+    speak: bool = True
+
+
+class ConversationCancelRequest(BaseModel):
+    request_id: str = Field(min_length=8, max_length=80)
+
+
 @app.get("/ready")
 def readiness() -> JSONResponse:
     report = diagnostics.run()
@@ -31,6 +44,42 @@ def readiness() -> JSONResponse:
 @app.get("/api/diagnostics")
 def diagnostic_report() -> dict[str, object]:
     return diagnostics.run()
+
+
+@app.post("/api/conversation/turn")
+def conversation_turn(request: ConversationTurnRequest) -> dict[str, object]:
+    turn = conversation_manager.turn(
+        request.text,
+        conversation_id=request.conversation_id,
+        request_id=request.request_id,
+    )
+    spoken = False
+    if request.speak and turn.answer and turn.final_state != "cancelled":
+        _, spoken = speech_coordinator.handle(
+            SpeechEvent(text=turn.answer, user_initiated=True)
+        )
+    return {**turn.to_dict(), "spoken": spoken}
+
+
+@app.post("/api/conversation/{conversation_id}/cancel")
+def conversation_cancel(
+    conversation_id: str,
+    request: ConversationCancelRequest,
+) -> dict[str, object]:
+    cancelled = conversation_manager.cancel(conversation_id, request.request_id)
+    return {
+        "ok": cancelled,
+        "detail": (
+            "J'arrête cette demande."
+            if cancelled
+            else "Cette demande n'est plus active ou n'existe pas."
+        ),
+    }
+
+
+@app.delete("/api/conversation/{conversation_id}")
+def conversation_reset(conversation_id: str) -> dict[str, object]:
+    return {"ok": conversation_manager.reset(conversation_id)}
 
 
 @app.post("/api/thunderbird/bridge/heartbeat")
