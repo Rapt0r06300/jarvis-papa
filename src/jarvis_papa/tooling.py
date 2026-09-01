@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+from contextlib import suppress
 from dataclasses import asdict, dataclass
 from enum import StrEnum
 from typing import Any, Callable
@@ -161,15 +162,13 @@ class ToolRegistry:
 
     @staticmethod
     def _finish(execution: ToolExecution) -> ToolExecution:
-        try:
+        with suppress(Exception):
             local_metrics.record(
                 f"tool.{execution.tool}",
                 duration_ms=execution.duration_ms,
                 ok=execution.state in {ToolState.SUCCESS, ToolState.PARTIAL},
                 final_state=execution.state.value,
             )
-        except Exception:
-            pass
         return execution
 
     @staticmethod
