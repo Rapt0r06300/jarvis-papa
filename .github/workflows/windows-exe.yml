@@ -41,6 +41,7 @@ jobs:
           pyinstaller --noconfirm --clean --onedir --windowed `
             --name Jarvis `
             --icon packaging/jarvis.ico `
+            --version-file packaging/version_info.txt `
             --paths src `
             --add-data "src/jarvis_papa/voice/qwen_worker.py;jarvis_papa/voice" `
             packaging/desktop_entry.py
@@ -51,6 +52,7 @@ jobs:
           pyinstaller --noconfirm --clean --onefile --console `
             --name JarvisNativeHost `
             --icon packaging/jarvis.ico `
+            --version-file packaging/version_info.txt `
             --paths src `
             packaging/native_host_entry.py
 
@@ -60,6 +62,7 @@ jobs:
           pyinstaller --noconfirm --clean --onefile --console `
             --name JarvisDiagnostic `
             --icon packaging/jarvis.ico `
+            --version-file packaging/version_info.txt `
             --paths src `
             packaging/diagnostic_entry.py
 
@@ -70,6 +73,8 @@ jobs:
         run: |
           $qwenWorker = "dist\Jarvis\_internal\jarvis_papa\voice\qwen_worker.py"
           if (-not (Test-Path $qwenWorker)) { throw "Qwen worker is missing from Jarvis bundle" }
+          $version = (Get-Item "dist\Jarvis\Jarvis.exe").VersionInfo.ProductVersion
+          if (-not $version.StartsWith("0.6.0")) { throw "Jarvis.exe metadata version is invalid: $version" }
           $process = Start-Process -FilePath "dist\Jarvis\Jarvis.exe" -PassThru
           $healthy = $false
           try {
