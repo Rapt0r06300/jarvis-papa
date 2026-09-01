@@ -1,6 +1,6 @@
 import json
 from dataclasses import asdict, dataclass
-from typing import Any
+from typing import Any, ClassVar
 
 from jarvis_papa.ai import AIUnavailable, local_ai
 from jarvis_papa.browser import browser_agent
@@ -22,7 +22,7 @@ class AgentResult:
 class JarvisAgent:
     """Read-oriented agent loop. Sensitive actions stay outside LLM tool access."""
 
-    TOOLS: list[dict[str, Any]] = [
+    TOOLS: ClassVar[list[dict[str, Any]]] = [
         {
             "type": "function",
             "function": {
