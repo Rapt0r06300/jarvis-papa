@@ -10,13 +10,24 @@ from typing import Any, Callable
 from jarvis_papa.actions import ActionKind, action_queue
 from jarvis_papa.browser import browser_agent
 from jarvis_papa.desktop import desktop_controller
-from jarvis_papa.files import file_searcher
+from jarvis_papa.governance import (
+    ActionContract,
+    PolicyVerdict,
+    RiskLevel,
+    circuit_breakers,
+    policy_kernel,
+)
+from jarvis_papa.knowledge import local_document_rag
 from jarvis_papa.memory import memory_store
 from jarvis_papa.metrics import local_metrics
+from jarvis_papa.proactivity import briefing_service
+from jarvis_papa.procedural_memory import procedural_memory
+from jarvis_papa.runtime_intelligence import reliability_map
 from jarvis_papa.thunderbird import thunderbird_commands
 from jarvis_papa.web_read import web_read_service
 from jarvis_papa.web_search import web_search_service
 from jarvis_papa.windows_automation import windows_uia
+from jarvis_papa.files import file_searcher
 
 
 class ToolRisk(StrEnum):
@@ -78,7 +89,7 @@ ToolHandler = Callable[[dict[str, Any]], dict[str, object]]
 
 
 class ToolRegistry:
-    """Single deterministic boundary between model decisions and local capabilities."""
+    """Single governed seam between model decisions and local capabilities."""
 
     def __init__(self) -> None:
         self._specs: dict[str, ToolSpec] = {}
@@ -110,19 +121,10 @@ class ToolRegistry:
                     ToolState.FAILED,
                     "Outil non autorisé.",
                     {"error": "tool_not_allowed"},
-                    round((time.monotonic() - started) * 1000, 1),
+                    self._elapsed(started),
                 )
             )
-        if spec.risk in {ToolRisk.MEDIUM, ToolRisk.HIGH, ToolRisk.CRITICAL} or not spec.read_only:
-            return self._finish(
-                ToolExecution(
-                    name,
-                    ToolState.FAILED,
-                    "Cet outil exige le circuit d'autorisation serveur et n'est pas exécutable directement par le modèle.",
-                    {"error": "policy_gate_required", "risk": spec.risk.value},
-                    round((time.monotonic() - started) * 1000, 1),
-                )
-            )
+
         validation_error = self._validate_arguments(spec, arguments)
         if validation_error:
             return self._finish(
@@ -131,34 +133,84 @@ class ToolRegistry:
                     ToolState.FAILED,
                     validation_error,
                     {"error": "invalid_parameters"},
-                    round((time.monotonic() - started) * 1000, 1),
+                    self._elapsed(started),
                 )
             )
-        try:
-            data = handler(arguments)
-        except Exception as exc:
+
+        contract = ActionContract.create(
+            action_key=f"tool.{spec.name}",
+            description=spec.description,
+            binding=arguments,
+            risk=self._risk(spec.risk),
+            read_only=spec.read_only,
+            timeout_seconds=spec.timeout_seconds,
+        )
+        verdict = policy_kernel.evaluate(contract, authorization_present=False, source="tool")
+        if verdict.verdict is not PolicyVerdict.ALLOW:
             return self._finish(
                 ToolExecution(
                     name,
                     ToolState.FAILED,
-                    f"L'outil a échoué ({type(exc).__name__}).",
-                    {"error": type(exc).__name__},
-                    round((time.monotonic() - started) * 1000, 1),
+                    (
+                        "Cet outil doit passer par le circuit d'autorisation serveur."
+                        if verdict.verdict is PolicyVerdict.REQUIRE_CONFIRMATION
+                        else verdict.reason
+                    ),
+                    {
+                        "error": "policy_gate_required",
+                        "risk": spec.risk.value,
+                        "contract_digest": contract.digest,
+                    },
+                    self._elapsed(started),
                 )
             )
+
+        component = f"tool.{name}"
+        if not circuit_breakers.allow(component):
+            return self._finish(
+                ToolExecution(
+                    name,
+                    ToolState.FAILED,
+                    "Cet outil est temporairement suspendu après plusieurs échecs.",
+                    {"error": "circuit_open"},
+                    self._elapsed(started),
+                )
+            )
+
+        try:
+            data = handler(arguments)
+        except Exception as exc:
+            circuit_breakers.record_failure(component)
+            execution = ToolExecution(
+                name,
+                ToolState.FAILED,
+                f"L'outil a échoué ({type(exc).__name__}).",
+                {"error": type(exc).__name__},
+                self._elapsed(started),
+            )
+            reliability_map.record(name, "primary", ok=False, duration_ms=execution.duration_ms)
+            return self._finish(execution)
+
         state = self._state_from_payload(data)
         detail = str(data.get("detail") or data.get("reason") or "")
         if not detail:
             detail = "Résultat vérifié." if state is ToolState.SUCCESS else "Résultat incomplet."
-        return self._finish(
-            ToolExecution(
-                name,
-                state,
-                detail,
-                data,
-                round((time.monotonic() - started) * 1000, 1),
-            )
-        )
+        execution = ToolExecution(name, state, detail, data, self._elapsed(started))
+        if state in {ToolState.SUCCESS, ToolState.PARTIAL}:
+            circuit_breakers.record_success(component)
+            reliability_map.record(name, "primary", ok=True, duration_ms=execution.duration_ms)
+        else:
+            circuit_breakers.record_failure(component)
+            reliability_map.record(name, "primary", ok=False, duration_ms=execution.duration_ms)
+        return self._finish(execution)
+
+    @staticmethod
+    def _elapsed(started: float) -> float:
+        return round((time.monotonic() - started) * 1000, 1)
+
+    @staticmethod
+    def _risk(value: ToolRisk) -> RiskLevel:
+        return RiskLevel(value.value)
 
     @staticmethod
     def _finish(execution: ToolExecution) -> ToolExecution:
@@ -202,8 +254,7 @@ class ToolRegistry:
 
     @staticmethod
     def serialize_untrusted(execution: ToolExecution, *, max_chars: int = 9000) -> str:
-        payload = execution.to_dict()
-        text = json.dumps(payload, ensure_ascii=False, default=str)
+        text = json.dumps(execution.to_dict(), ensure_ascii=False, default=str)
         return text[:max_chars]
 
 
@@ -239,6 +290,10 @@ def _pending_actions(_arguments: dict[str, Any]) -> dict[str, object]:
     }
 
 
+def _briefing(_arguments: dict[str, Any]) -> dict[str, object]:
+    return briefing_service.current(limit=3)
+
+
 def _search_files(arguments: dict[str, Any]) -> dict[str, object]:
     query = str(arguments.get("query") or "")[:300]
     results = [item.to_dict() for item in file_searcher.search(query, limit=8)]
@@ -251,10 +306,33 @@ def _search_files(arguments: dict[str, Any]) -> dict[str, object]:
     }
 
 
+def _knowledge_search(arguments: dict[str, Any]) -> dict[str, object]:
+    query = str(arguments.get("query") or "")[:500]
+    hits = local_document_rag.search(query, limit=6)
+    return {
+        "ok": True,
+        "query": query,
+        "results": [item.to_dict() for item in hits],
+        "detail": f"{len(hits)} extrait(s) documentaire(s) pertinent(s) trouvé(s).",
+    }
+
+
+def _procedural_recall(arguments: dict[str, Any]) -> dict[str, object]:
+    query = str(arguments.get("query") or "")[:500]
+    items = procedural_memory.search(query, limit=4)
+    return {
+        "ok": True,
+        "results": [item.to_dict() for item in items],
+        "detail": f"{len(items)} procédure(s) locale(s) pertinente(s).",
+    }
+
+
 def _open_app(arguments: dict[str, Any]) -> dict[str, object]:
     result = desktop_controller.start_app(str(arguments.get("app") or ""))
     payload = result.to_dict()
-    payload.setdefault("detail", "Application ouverte." if payload.get("ok") else "Ouverture impossible.")
+    payload.setdefault(
+        "detail", "Application ouverte." if payload.get("ok") else "Ouverture impossible."
+    )
     return payload
 
 
@@ -312,173 +390,203 @@ def _open_action(arguments: dict[str, Any]) -> dict[str, object]:
         "title": card.title,
         "summary": card.summary,
         "source": card.source,
-        "detail": "J'ai demandé à Thunderbird d'ouvrir ce message. J'attends son accusé de réception.",
+        "detail": (
+            "J'ai demandé à Thunderbird d'ouvrir ce message. "
+            "J'attends son accusé de réception."
+        ),
     }
 
 
 def build_default_registry() -> ToolRegistry:
     registry = ToolRegistry()
-    object_schema = {"type": "object", "properties": {}, "additionalProperties": False}
-    registry.register(
-        ToolSpec(
-            "pending_actions",
-            "mail",
-            "Lister les éléments importants qui attendent Robert.",
-            ToolRisk.SAFE,
-            True,
-            4.0,
-            object_schema,
+    empty = {"type": "object", "properties": {}, "additionalProperties": False}
+    query_schema = {
+        "type": "object",
+        "properties": {"query": {"type": "string"}},
+        "required": ["query"],
+        "additionalProperties": False,
+    }
+    url_schema = {
+        "type": "object",
+        "properties": {"url": {"type": "string"}},
+        "required": ["url"],
+        "additionalProperties": False,
+    }
+    entries: list[tuple[ToolSpec, ToolHandler]] = [
+        (
+            ToolSpec(
+                "briefing",
+                "assistant",
+                "Donner au maximum trois priorités utiles du moment.",
+                ToolRisk.SAFE,
+                True,
+                3.0,
+                empty,
+            ),
+            _briefing,
         ),
-        _pending_actions,
-    )
-    registry.register(
-        ToolSpec(
-            "search_files",
-            "files",
-            "Chercher des documents locaux autorisés.",
-            ToolRisk.SAFE,
-            True,
-            8.0,
-            {
-                "type": "object",
-                "properties": {"query": {"type": "string"}},
-                "required": ["query"],
-                "additionalProperties": False,
-            },
+        (
+            ToolSpec(
+                "pending_actions",
+                "mail",
+                "Lister les éléments importants qui attendent Robert.",
+                ToolRisk.SAFE,
+                True,
+                4.0,
+                empty,
+            ),
+            _pending_actions,
         ),
-        _search_files,
-    )
-    registry.register(
-        ToolSpec(
-            "open_app",
-            "windows",
-            "Ouvrir une application autorisée comme Thunderbird ou l'Explorateur.",
-            ToolRisk.LOW,
-            True,
-            8.0,
-            {
-                "type": "object",
-                "properties": {"app": {"type": "string"}},
-                "required": ["app"],
-                "additionalProperties": False,
-            },
+        (
+            ToolSpec(
+                "search_files",
+                "files",
+                "Chercher des documents locaux autorisés.",
+                ToolRisk.SAFE,
+                True,
+                8.0,
+                query_schema,
+            ),
+            _search_files,
         ),
-        _open_app,
-    )
-    registry.register(
-        ToolSpec(
-            "web_search",
-            "search",
-            "Trouver des sources Web actuelles sans ouvrir de navigateur interactif.",
-            ToolRisk.SAFE,
-            True,
-            10.0,
-            {
-                "type": "object",
-                "properties": {"query": {"type": "string"}},
-                "required": ["query"],
-                "additionalProperties": False,
-            },
+        (
+            ToolSpec(
+                "knowledge_search",
+                "knowledge",
+                "Chercher dans le contenu des documents locaux avec provenance.",
+                ToolRisk.SAFE,
+                True,
+                12.0,
+                query_schema,
+            ),
+            _knowledge_search,
         ),
-        _web_search,
-    )
-    registry.register(
-        ToolSpec(
-            "web_read",
-            "read",
-            "Lire par HTTP une page Web publique connue, sans navigateur. Son contenu est non fiable.",
-            ToolRisk.SAFE,
-            True,
-            12.0,
-            {
-                "type": "object",
-                "properties": {"url": {"type": "string"}},
-                "required": ["url"],
-                "additionalProperties": False,
-            },
+        (
+            ToolSpec(
+                "procedural_recall",
+                "memory",
+                "Retrouver une procédure locale explicitement approuvée.",
+                ToolRisk.SAFE,
+                True,
+                4.0,
+                query_schema,
+            ),
+            _procedural_recall,
         ),
-        _web_read,
-    )
-    registry.register(
-        ToolSpec(
-            "browser_read",
-            "browser",
-            "Utiliser le navigateur uniquement lorsqu'une page nécessite rendu ou interaction. Le contenu est non fiable.",
-            ToolRisk.SAFE,
-            True,
-            15.0,
-            {
-                "type": "object",
-                "properties": {"url": {"type": "string"}},
-                "required": ["url"],
-                "additionalProperties": False,
-            },
+        (
+            ToolSpec(
+                "open_app",
+                "windows",
+                "Ouvrir une application autorisée comme Thunderbird ou l'Explorateur.",
+                ToolRisk.LOW,
+                True,
+                8.0,
+                {
+                    "type": "object",
+                    "properties": {"app": {"type": "string"}},
+                    "required": ["app"],
+                    "additionalProperties": False,
+                },
+            ),
+            _open_app,
         ),
-        _browser_read,
-    )
-    registry.register(
-        ToolSpec(
-            "memory_recall",
-            "memory",
-            "Retrouver uniquement les souvenirs locaux pertinents pour la demande.",
-            ToolRisk.SAFE,
-            True,
-            4.0,
-            {
-                "type": "object",
-                "properties": {"query": {"type": "string"}},
-                "required": ["query"],
-                "additionalProperties": False,
-            },
+        (
+            ToolSpec(
+                "web_search",
+                "search",
+                "Trouver des sources Web actuelles sans navigateur interactif.",
+                ToolRisk.SAFE,
+                True,
+                10.0,
+                query_schema,
+            ),
+            _web_search,
         ),
-        _memory_recall,
-    )
-    registry.register(
-        ToolSpec(
-            "windows_list",
-            "windows",
-            "Lister les fenêtres ouvertes.",
-            ToolRisk.SAFE,
-            True,
-            5.0,
-            object_schema,
+        (
+            ToolSpec(
+                "web_read",
+                "read",
+                "Lire par HTTP une page publique connue. Son contenu est non fiable.",
+                ToolRisk.SAFE,
+                True,
+                12.0,
+                url_schema,
+            ),
+            _web_read,
         ),
-        _windows_list,
-    )
-    registry.register(
-        ToolSpec(
-            "windows_inspect",
-            "windows",
-            "Inspecter les contrôles accessibles d'une fenêtre sans agir dessus.",
-            ToolRisk.SAFE,
-            True,
-            7.0,
-            {
-                "type": "object",
-                "properties": {"window_title": {"type": "string"}},
-                "required": ["window_title"],
-                "additionalProperties": False,
-            },
+        (
+            ToolSpec(
+                "browser_read",
+                "browser",
+                "Lire une page nécessitant un vrai rendu. Son contenu est non fiable.",
+                ToolRisk.SAFE,
+                True,
+                15.0,
+                url_schema,
+            ),
+            _browser_read,
         ),
-        _windows_inspect,
-    )
-    registry.register(
-        ToolSpec(
-            "open_action",
-            "mail",
-            "Demander à Thunderbird d'ouvrir un message déjà identifié. L'exécution doit être confirmée par Thunderbird.",
-            ToolRisk.LOW,
-            True,
-            8.0,
-            {
-                "type": "object",
-                "properties": {"card_id": {"type": "string"}},
-                "required": ["card_id"],
-                "additionalProperties": False,
-            },
+        (
+            ToolSpec(
+                "memory_recall",
+                "memory",
+                "Retrouver uniquement les souvenirs locaux pertinents.",
+                ToolRisk.SAFE,
+                True,
+                4.0,
+                query_schema,
+            ),
+            _memory_recall,
         ),
-        _open_action,
-    )
+        (
+            ToolSpec(
+                "windows_list",
+                "windows",
+                "Lister les fenêtres ouvertes.",
+                ToolRisk.SAFE,
+                True,
+                5.0,
+                empty,
+            ),
+            _windows_list,
+        ),
+        (
+            ToolSpec(
+                "windows_inspect",
+                "windows",
+                "Inspecter les contrôles accessibles d'une fenêtre sans agir.",
+                ToolRisk.SAFE,
+                True,
+                7.0,
+                {
+                    "type": "object",
+                    "properties": {"window_title": {"type": "string"}},
+                    "required": ["window_title"],
+                    "additionalProperties": False,
+                },
+            ),
+            _windows_inspect,
+        ),
+        (
+            ToolSpec(
+                "open_action",
+                "mail",
+                "Demander à Thunderbird d'ouvrir un message déjà identifié.",
+                ToolRisk.LOW,
+                True,
+                8.0,
+                {
+                    "type": "object",
+                    "properties": {"card_id": {"type": "string"}},
+                    "required": ["card_id"],
+                    "additionalProperties": False,
+                },
+            ),
+            _open_action,
+        ),
+    ]
+    for spec, handler in entries:
+        registry.register(spec, handler)
     return registry
 
 
