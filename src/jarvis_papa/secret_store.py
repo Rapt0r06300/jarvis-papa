@@ -76,7 +76,7 @@ class DPAPIProtector:
         else:
             ok = crypt32.CryptProtectData(
                 ctypes.byref(input_blob),
-                "Jarvis Papa",
+                ctypes.c_wchar_p("Jarvis Papa"),
                 None,
                 None,
                 None,
