@@ -9,7 +9,9 @@ import jarvis_papa.mail_intelligence as mail_intelligence_module
 import jarvis_papa.routes as routes_module
 import jarvis_papa.tooling as tooling_module
 from jarvis_papa.advanced_routes import router as advanced_router
+from jarvis_papa.audit import audit_log
 from jarvis_papa.browser_workflow_routes import router as browser_workflow_router
+from jarvis_papa.confirmations import confirmation_manager
 from jarvis_papa.conversation import conversation_manager
 from jarvis_papa.dashboard_secure import dashboard_html as secure_dashboard_html
 from jarvis_papa.diagnostics import diagnostics
@@ -57,6 +59,10 @@ class ConversationCancelRequest(BaseModel):
     request_id: str = Field(min_length=8, max_length=80)
 
 
+class ConversationResetRequest(BaseModel):
+    authorization_token: str = Field(default="", max_length=300)
+
+
 @app.get("/ready")
 def readiness() -> JSONResponse:
     report = diagnostics.run()
@@ -88,6 +94,7 @@ def conversation_cancel(
     conversation_id: str,
     request: ConversationCancelRequest,
 ) -> dict[str, object]:
+    # Stop/cancel is a safety action: it prevents further work and must remain immediate.
     cancelled = conversation_manager.cancel(conversation_id, request.request_id)
     return {
         "ok": cancelled,
@@ -99,9 +106,56 @@ def conversation_cancel(
     }
 
 
+@app.get("/api/conversation/{conversation_id}/reset-plan")
+def conversation_reset_plan(conversation_id: str) -> dict[str, object]:
+    binding = {"conversation_id": conversation_id}
+    return {
+        "ok": True,
+        "action_key": "conversation.reset",
+        "binding": binding,
+        "description": "Supprimer l'historique local de cette conversation.",
+    }
+
+
 @app.delete("/api/conversation/{conversation_id}")
-def conversation_reset(conversation_id: str) -> dict[str, object]:
-    return {"ok": conversation_manager.reset(conversation_id)}
+def conversation_reset(
+    conversation_id: str,
+    request: ConversationResetRequest,
+) -> dict[str, object]:
+    binding = {"conversation_id": conversation_id}
+    authorized = confirmation_manager.consume(
+        request.authorization_token,
+        "conversation.reset",
+        binding,
+    )
+    audit_log.record(
+        "authorization_consumed",
+        action="conversation.reset",
+        ok=authorized,
+        metadata=binding,
+    )
+    if not authorized:
+        return {
+            "ok": False,
+            "state": "failed",
+            "detail": "Suppression bloquée : deux autorisations exactes sont obligatoires.",
+        }
+    deleted = conversation_manager.reset(conversation_id)
+    audit_log.record(
+        "conversation_reset",
+        action="conversation.reset",
+        ok=deleted,
+        metadata=binding,
+    )
+    return {
+        "ok": deleted,
+        "state": "success" if deleted else "failed",
+        "detail": (
+            "L'historique local de cette conversation a été supprimé."
+            if deleted
+            else "Aucun historique local n'a été supprimé."
+        ),
+    }
 
 
 @app.post("/api/thunderbird/bridge/heartbeat")
