@@ -16,10 +16,12 @@ def test_dashboard_is_available() -> None:
     assert response.status_code == 200
     assert "Jarvis est prêt" in response.text
     assert "Bonjour Robert" in response.text
-    assert "Ce qui demande ton attention" in response.text
+    assert "À faire maintenant" in response.text
     assert "Fais-moi le point" in response.text
     assert "Autorisation 1 sur 2" in response.text
     assert "Autorisation 2 sur 2" in response.text
+    assert 'class="avatar"' in response.text
+    assert "assistant-pane.speaking" in response.text
 
 
 def test_status_reports_double_confirmation_security() -> None:
@@ -29,6 +31,21 @@ def test_status_reports_double_confirmation_security() -> None:
     assert payload["security"] == "two_explicit_confirmations_for_changes"
     assert payload["modules"]["mail"] == "important_summaries_and_newsletter_sorting"
     assert payload["modules"]["voice_output"] == "important_mail_summaries_ready"
+
+
+def test_voice_status_exposes_french_female_persona() -> None:
+    response = client.get("/api/voice/status")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["language"] == "fr-FR"
+    assert payload["persona"] == "jeune_femme_française_douce"
+    assert payload["provider_order"][:3] == ["elevenlabs", "azure", "qwen3"]
+
+
+def test_voice_event_endpoint_starts_empty_or_returns_events() -> None:
+    response = client.get("/api/voice/events", params={"after": 0})
+    assert response.status_code == 200
+    assert isinstance(response.json()["events"], list)
 
 
 def test_write_permission_requires_two_confirmations() -> None:
