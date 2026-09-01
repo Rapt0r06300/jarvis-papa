@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import base64
+import heapq
+import re
 import subprocess
 import sys
 import time
@@ -8,7 +10,7 @@ import uuid
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
-from threading import Lock
+from threading import Condition, Lock, Thread
 
 import httpx
 
@@ -44,19 +46,39 @@ class VoiceResult:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class _PlaybackItem:
+    utterance_id: str
+    text: str
+    path: Path
+    provider: str
+    duration: float
+    priority: int
+
+
 class VoicePlaybackBus:
     def __init__(self) -> None:
-        self._events: deque[dict[str, object]] = deque(maxlen=30)
+        self._events: deque[dict[str, object]] = deque(maxlen=120)
         self._counter = 0
         self._lock = Lock()
 
-    def publish(self, *, text: str, provider: str, duration: float) -> int:
+    def publish(
+        self,
+        *,
+        text: str,
+        provider: str,
+        duration: float,
+        event_type: str = "speech_queued",
+        utterance_id: str | None = None,
+    ) -> int:
         with self._lock:
             self._counter += 1
             event_id = self._counter
             self._events.append(
                 {
                     "id": event_id,
+                    "type": event_type,
+                    "utterance_id": utterance_id or "",
                     "text": text,
                     "provider": provider,
                     "duration_estimate_seconds": duration,
@@ -71,13 +93,19 @@ class VoicePlaybackBus:
 
 
 class WindowsAudioPlayer:
+    def __init__(self) -> None:
+        self._process: subprocess.Popen[bytes] | None = None
+        self._lock = Lock()
+
     @property
     def available(self) -> bool:
         return sys.platform == "win32"
 
-    def play_async(self, path: Path, duration_seconds: float) -> bool:
+    def play(self, path: Path, duration_seconds: float) -> bool:
         if not self.available or not path.exists():
-            return False
+            # Non-Windows test/development environments still get truthful voice events.
+            time.sleep(min(0.02, max(0.0, duration_seconds)))
+            return path.exists()
         encoded = base64.b64encode(str(path.resolve()).encode("utf-8")).decode("ascii")
         wait_ms = max(1800, int((duration_seconds + 1.0) * 1000))
         script = (
@@ -88,16 +116,43 @@ class WindowsAudioPlayer:
             "$m.Open([Uri]$p);Start-Sleep -Milliseconds 250;$m.Play();"
             f"Start-Sleep -Milliseconds {wait_ms};$m.Close();"
         )
-        subprocess.Popen(
-            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
+        try:
+            process = subprocess.Popen(
+                ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except OSError:
+            return False
+        with self._lock:
+            self._process = process
+        try:
+            return process.wait() == 0
+        finally:
+            with self._lock:
+                if self._process is process:
+                    self._process = None
+
+    def stop(self) -> bool:
+        with self._lock:
+            process = self._process
+        if process is None or process.poll() is not None:
+            return False
+        try:
+            process.terminate()
+            process.wait(timeout=0.8)
+        except (OSError, subprocess.TimeoutExpired):
+            try:
+                process.kill()
+            except OSError:
+                pass
         return True
 
 
 class VoiceService:
+    _PRIORITIES = {"critical": 0, "high": 1, "normal": 2, "low": 3}
+
     def __init__(self, providers: dict[str, VoiceProvider] | None = None) -> None:
         self.providers = providers or {
             "elevenlabs": ElevenLabsProvider(),
@@ -109,6 +164,14 @@ class VoiceService:
         self.events = VoicePlaybackBus()
         self._last_result = VoiceResult(ok=False)
         self._lock = Lock()
+        self._condition = Condition(Lock())
+        self._queue: list[tuple[int, int, _PlaybackItem]] = []
+        self._sequence = 0
+        self._current: _PlaybackItem | None = None
+        self._current_interrupted = False
+        self._stopping = False
+        self._worker = Thread(target=self._playback_loop, name="JarvisVoicePlayback", daemon=True)
+        self._worker.start()
 
     @property
     def output_dir(self) -> Path:
@@ -134,6 +197,12 @@ class VoiceService:
         return provider.warm_async()
 
     def shutdown(self) -> None:
+        self.stop(clear_queue=True)
+        with self._condition:
+            self._stopping = True
+            self._condition.notify_all()
+        if self._worker.is_alive():
+            self._worker.join(timeout=1.5)
         provider = self.providers.get("qwen3")
         if isinstance(provider, Qwen3TTSProvider):
             provider.shutdown()
@@ -144,9 +213,14 @@ class VoiceService:
             state_method = getattr(provider, "status", None)
             if callable(state_method):
                 state = state_method()
-                provider_states[name] = dict(state) if isinstance(state, dict) else {"available": provider.available}
+                provider_states[name] = (
+                    dict(state) if isinstance(state, dict) else {"available": provider.available}
+                )
             else:
                 provider_states[name] = {"available": provider.available}
+        with self._condition:
+            queue_length = len(self._queue)
+            current = self._current
         return {
             "enabled": settings.speech_enabled,
             "language": "fr-FR",
@@ -156,6 +230,9 @@ class VoiceService:
             "cloud_for_sensitive_content": settings.voice_cloud_for_sensitive_content,
             "prewarm_enabled": settings.qwen3_tts_prewarm,
             "providers": provider_states,
+            "queue_length": queue_length,
+            "speaking": current is not None,
+            "current_utterance_id": current.utterance_id if current else None,
             "last_result": self._last_result.to_dict(),
         }
 
@@ -198,24 +275,158 @@ class VoiceService:
             self._last_result = result
         return result
 
-    def speak(self, text: str, *, sensitive: bool = False) -> VoiceResult:
-        result = self.synthesize(text, sensitive=sensitive)
-        if not result.ok or not result.file_name or not result.provider:
-            return result
-        path = self.output_dir / result.file_name
-        self.player.play_async(path, result.duration_estimate_seconds)
-        self.events.publish(
-            text=" ".join(text.split()),
-            provider=result.provider,
-            duration=result.duration_estimate_seconds,
+    def speak(
+        self,
+        text: str,
+        *,
+        sensitive: bool = False,
+        priority: str = "normal",
+    ) -> VoiceResult:
+        cleaned = " ".join(text.split()).strip()
+        chunks = self._split_text(cleaned)
+        if not chunks:
+            return VoiceResult(ok=False, errors=("Texte vocal vide.",), sensitive=sensitive)
+        priority_value = self._PRIORITIES.get(priority.casefold(), self._PRIORITIES["normal"])
+        first_result: VoiceResult | None = None
+        errors: list[str] = []
+        utterance_root = uuid.uuid4().hex
+        for index, chunk in enumerate(chunks):
+            result = self.synthesize(chunk, sensitive=sensitive)
+            if first_result is None:
+                first_result = result
+            errors.extend(result.errors)
+            if not result.ok or not result.file_name or not result.provider:
+                continue
+            item = _PlaybackItem(
+                utterance_id=f"{utterance_root}:{index}",
+                text=chunk,
+                path=self.output_dir / result.file_name,
+                provider=result.provider,
+                duration=result.duration_estimate_seconds,
+                priority=priority_value,
+            )
+            self._enqueue(item)
+        if first_result is None:
+            return VoiceResult(ok=False, errors=tuple(errors), sensitive=sensitive)
+        if not any(item[2].utterance_id.startswith(utterance_root) for item in self._queue_snapshot()):
+            return VoiceResult(
+                ok=False,
+                errors=tuple(errors or first_result.errors),
+                sensitive=sensitive,
+            )
+        return VoiceResult(
+            ok=True,
+            provider=first_result.provider,
+            file_name=first_result.file_name,
+            media_type=first_result.media_type,
+            duration_estimate_seconds=sum(self._estimate_duration(chunk) for chunk in chunks),
+            errors=tuple(errors),
+            sensitive=sensitive,
         )
-        return result
+
+    def stop(self, *, clear_queue: bool = True) -> bool:
+        with self._condition:
+            had_work = self._current is not None or bool(self._queue)
+            if clear_queue:
+                self._queue.clear()
+            if self._current is not None:
+                self._current_interrupted = True
+            self._condition.notify_all()
+        player_stopped = self.player.stop()
+        return had_work or player_stopped
 
     def resolve_audio(self, file_name: str) -> Path | None:
         if Path(file_name).name != file_name:
             return None
         path = self.output_dir / file_name
         return path if path.is_file() else None
+
+    def _enqueue(self, item: _PlaybackItem) -> None:
+        preempt = False
+        with self._condition:
+            self._sequence += 1
+            heapq.heappush(self._queue, (item.priority, self._sequence, item))
+            if self._current is not None and item.priority < self._current.priority:
+                self._current_interrupted = True
+                preempt = True
+            self._condition.notify_all()
+        self.events.publish(
+            text=item.text,
+            provider=item.provider,
+            duration=item.duration,
+            event_type="speech_queued",
+            utterance_id=item.utterance_id,
+        )
+        if preempt:
+            self.player.stop()
+
+    def _playback_loop(self) -> None:
+        while True:
+            with self._condition:
+                while not self._queue and not self._stopping:
+                    self._condition.wait(timeout=1.0)
+                if self._stopping:
+                    return
+                _, _, item = heapq.heappop(self._queue)
+                self._current = item
+                self._current_interrupted = False
+            self.events.publish(
+                text=item.text,
+                provider=item.provider,
+                duration=item.duration,
+                event_type="speech_started",
+                utterance_id=item.utterance_id,
+            )
+            played = self.player.play(item.path, item.duration)
+            with self._condition:
+                interrupted = self._current_interrupted
+                self._current = None
+                self._current_interrupted = False
+            event_type = "speech_interrupted" if interrupted else "speech_finished"
+            if not played and not interrupted:
+                event_type = "speech_failed"
+            self.events.publish(
+                text=item.text,
+                provider=item.provider,
+                duration=item.duration,
+                event_type=event_type,
+                utterance_id=item.utterance_id,
+            )
+
+    def _queue_snapshot(self) -> list[tuple[int, int, _PlaybackItem]]:
+        with self._condition:
+            return list(self._queue)
+
+    @staticmethod
+    def _split_text(text: str, limit: int = 280) -> list[str]:
+        cleaned = " ".join(text.split()).strip()
+        if not cleaned:
+            return []
+        sentences = [
+            item.strip()
+            for item in re.split(r"(?<=[.!?;:])\s+", cleaned)
+            if item.strip()
+        ]
+        chunks: list[str] = []
+        current = ""
+        for sentence in sentences or [cleaned]:
+            parts = [sentence]
+            if len(sentence) > limit:
+                parts = [
+                    sentence[index : index + limit].strip()
+                    for index in range(0, len(sentence), limit)
+                    if sentence[index : index + limit].strip()
+                ]
+            for part in parts:
+                candidate = f"{current} {part}".strip()
+                if current and len(candidate) > limit:
+                    chunks.append(current)
+                    current = part
+                else:
+                    current = candidate
+        if current:
+            chunks.append(current)
+        return chunks
 
     @staticmethod
     def _estimate_duration(text: str) -> float:
