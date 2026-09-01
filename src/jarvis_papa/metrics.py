@@ -5,9 +5,9 @@ import math
 import threading
 import time
 from collections import defaultdict, deque
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Iterable
 
 from jarvis_papa.config import settings
 
