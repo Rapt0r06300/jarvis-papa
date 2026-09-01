@@ -178,9 +178,12 @@ class MailAssistant:
             normalized = word.lower()
             if normalized in {"merci", "bonjour", "cordialement", "document", "veuillez"}:
                 continue
-            if normalized not in found and len(found) < 6:
-                if any(char.isdigit() for char in normalized) or len(normalized) >= 6:
-                    found.append(normalized)
+            if (
+                normalized not in found
+                and len(found) < 6
+                and (any(char.isdigit() for char in normalized) or len(normalized) >= 6)
+            ):
+                found.append(normalized)
         return tuple(found[:6])
 
     @staticmethod
