@@ -46,6 +46,7 @@ class ProfessionalMainWindow(QMainWindow):
         self.selected_card_ids: set[str] = set()
         self.proposal_checks: dict[str, QCheckBox] = {}
         self.newsletter_count = 0
+        self.newsletter_card_ids: list[str] = []
         self.intro_announced = False
         self.activity_serial = 0
         self.activity_started_at: float | None = None
@@ -541,6 +542,21 @@ class ProfessionalMainWindow(QMainWindow):
             self._say(text, importance="high" if not success else "normal")
         QTimer.singleShot(500, self.refresh)
 
+    def finish_partial(self, text: str, *, speak: bool = True) -> None:
+        self.busy = False
+        self.activity_started_at = None
+        self.activity_progress.hide()
+        self.activity_elapsed.setText("")
+        self.activity_title.setText("En attente de confirmation")
+        self.activity_detail.setText(text)
+        self.status.setText("●  Vérification en attente")
+        self._history_add(text)
+        self.caption.setText(text)
+        self.left_state.setText(text)
+        if speak:
+            self._say(text)
+        QTimer.singleShot(500, self.refresh)
+
     def _update_activity_elapsed(self) -> None:
         if not self.busy or self.activity_started_at is None:
             return
@@ -630,8 +646,8 @@ class ProfessionalMainWindow(QMainWindow):
             self.finish_activity("D’accord. J’ai arrêté cette demande.", speak=False)
         elif final_state == "failed":
             self.finish_activity(answer, success=False, speak=False)
-        elif final_state == "partial":
-            self.finish_activity(answer, success=True, speak=False)
+        elif final_state in {"partial", "unknown"}:
+            self.finish_partial(answer, speak=False)
         else:
             self.finish_activity(answer, success=True, speak=False)
 
@@ -720,6 +736,12 @@ class ProfessionalMainWindow(QMainWindow):
 
     def render_newsletters(self, payload: dict[str, object]) -> None:
         self.newsletter_count = int(payload.get("count") or 0)
+        items = payload.get("items") if isinstance(payload.get("items"), list) else []
+        self.newsletter_card_ids = [
+            str(item.get("id"))
+            for item in items
+            if isinstance(item, dict) and item.get("id")
+        ]
         suffix = "newsletter à ranger" if self.newsletter_count == 1 else "newsletters à ranger"
         self.newsletter_label.setText(f"{self.newsletter_count} {suffix}")
 
@@ -927,7 +949,50 @@ class ProfessionalMainWindow(QMainWindow):
         if not bool(result.get("ok", True)):
             self._task_failed(detail or "L’action n’a pas abouti.")
             return
+        if str(result.get("state") or "") == "partial" and result.get("command_id"):
+            self._await_thunderbird_command(str(result["command_id"]), detail)
+            return
         self.finish_activity(detail or done_text)
+
+    def _await_thunderbird_command(self, command_id: str, detail: str = "") -> None:
+        self.activity_title.setText("J’attends la confirmation de Thunderbird")
+        self.activity_detail.setText(
+            detail or "La demande est partie. Je vérifie maintenant que Thunderbird l’a vraiment terminée."
+        )
+        self.activity_progress.show()
+        self._poll_thunderbird_command(command_id, 0)
+
+    def _poll_thunderbird_command(self, command_id: str, attempt: int) -> None:
+        if attempt >= 30:
+            self.finish_partial(
+                "Thunderbird ne m’a pas encore confirmé le résultat. Je ne considère pas l’action comme terminée."
+            )
+            return
+        self._worker(
+            lambda: self.api.request(
+                "GET", f"/api/thunderbird/commands/{command_id}", timeout=3
+            ),
+            partial(self._thunderbird_command_result, command_id, attempt),
+            on_error=lambda _message: QTimer.singleShot(
+                500, partial(self._poll_thunderbird_command, command_id, attempt + 1)
+            ),
+        )
+
+    def _thunderbird_command_result(
+        self,
+        command_id: str,
+        attempt: int,
+        result: dict[str, object],
+    ) -> None:
+        status = str(result.get("status") or "pending")
+        if status == "succeeded":
+            self.finish_activity("Thunderbird m’a confirmé que l’action est terminée.")
+            return
+        if status == "failed":
+            detail = str(result.get("error") or "Thunderbird n’a pas pu terminer cette action.")
+            self.finish_activity(detail, success=False)
+            return
+        QTimer.singleShot(500, partial(self._poll_thunderbird_command, command_id, attempt + 1))
 
     def handle_option(self, card: dict[str, object], option: dict[str, object]) -> None:
         card_id = str(card.get("id") or "")
@@ -940,6 +1005,7 @@ class ProfessionalMainWindow(QMainWindow):
             token = self.authorize(
                 "mail.prepare_reply",
                 "Préparer un brouillon dans Thunderbird. Aucun mail ne sera envoyé.",
+                {"card_id": card_id, "option_id": option_id},
             ) or ""
             if not token:
                 return
@@ -990,6 +1056,9 @@ class ProfessionalMainWindow(QMainWindow):
             self.choose_file(card, items)
             return
         detail = str(result.get("detail") or "")
+        if str(result.get("state") or "") == "partial" and result.get("command_id"):
+            self._await_thunderbird_command(str(result["command_id"]), detail)
+            return
         self.finish_activity(detail or "L’étape est terminée.")
 
     def choose_file(self, card: dict[str, object], results: list[dict[str, object]]) -> None:
@@ -1008,13 +1077,15 @@ class ProfessionalMainWindow(QMainWindow):
             )
             return
         if dialog.mode == "attach":
+            card_id = str(card.get("id") or "")
+            paths = [dialog.selected_path]
             token = self.authorize(
                 "mail.prepare_reply_attachment",
                 f"Préparer un brouillon avec le document « {filename} ».",
+                {"card_id": card_id, "paths": paths},
             )
             if not token:
                 return
-            card_id = str(card.get("id") or "")
             self.begin_activity(
                 f"Je prépare le brouillon avec « {filename} » en pièce jointe.",
                 wait_text="Je prépare la pièce jointe et le brouillon. Ça peut prendre quelques instants.",
@@ -1023,7 +1094,7 @@ class ProfessionalMainWindow(QMainWindow):
                 lambda: self.api.request(
                     "POST",
                     f"/api/actions/{card_id}/attach",
-                    payload={"paths": [dialog.selected_path], "authorization_token": token},
+                    payload={"paths": paths, "authorization_token": token},
                     timeout=30,
                 ),
                 partial(self._operation_result, "Le brouillon est prêt avec le document joint."),
@@ -1032,9 +1103,11 @@ class ProfessionalMainWindow(QMainWindow):
     def snooze_card(self, card_id: str) -> None:
         if not card_id:
             return
+        hours = 4.0
         token = self.authorize(
             "actions.snooze",
             "Reporter cette tâche de quatre heures. Elle réapparaîtra automatiquement.",
+            {"card_id": card_id, "hours": hours},
         )
         if not token:
             return
@@ -1043,7 +1116,7 @@ class ProfessionalMainWindow(QMainWindow):
             lambda: self.api.request(
                 "POST",
                 f"/api/actions/{card_id}/snooze",
-                payload={"hours": 4, "authorization_token": token},
+                payload={"hours": hours, "authorization_token": token},
             ),
             partial(self._operation_result, "Je te la reproposerai dans quatre heures."),
         )
@@ -1052,9 +1125,17 @@ class ProfessionalMainWindow(QMainWindow):
         if self.newsletter_count <= 0:
             self.announce("Il n’y a aucune newsletter à ranger pour le moment.")
             return
+        if len(self.newsletter_card_ids) != self.newsletter_count:
+            self.announce(
+                "La liste des newsletters vient de changer. Je la rafraîchis avant de demander ton autorisation."
+            )
+            self.refresh()
+            return
+        binding = {"card_ids": self.newsletter_card_ids}
         token = self.authorize(
             "mail.sort_newsletters",
             "Déplacer les newsletters détectées dans le dossier Newsletters de Thunderbird.",
+            binding,
         )
         if not token:
             return
@@ -1071,7 +1152,12 @@ class ProfessionalMainWindow(QMainWindow):
             partial(self._operation_result, "Le rangement a été demandé à Thunderbird."),
         )
 
-    def authorize(self, action_key: str, description: str) -> str | None:
+    def authorize(
+        self,
+        action_key: str,
+        description: str,
+        binding: dict[str, object] | None = None,
+    ) -> str | None:
         self.announce(
             "Cette action va modifier quelque chose. J’ai besoin de ta première autorisation avant de continuer."
         )
@@ -1089,7 +1175,11 @@ class ProfessionalMainWindow(QMainWindow):
             started = self.api.request(
                 "POST",
                 "/api/confirmations/start",
-                payload={"action_key": action_key, "description": description},
+                payload={
+                    "action_key": action_key,
+                    "description": description,
+                    "binding": binding or {},
+                },
                 timeout=4,
             )
             challenge_id = str(started.get("challenge_id") or "")
