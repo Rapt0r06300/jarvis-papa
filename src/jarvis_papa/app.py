@@ -35,7 +35,7 @@ def diagnostic_report() -> dict[str, object]:
 
 @app.post("/api/thunderbird/bridge/heartbeat")
 def thunderbird_bridge_heartbeat(request: ThunderbirdHeartbeatRequest) -> dict[str, object]:
-    thunderbird_bridge_state.mark_seen(request.source)
+    thunderbird_bridge_state.mark_seen(request.source, request.pid)
     return {"ok": True, **thunderbird_bridge_state.snapshot()}
 
 
