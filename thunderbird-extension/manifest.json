@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Jarvis Papa Bridge",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Relie Thunderbird à Jarvis Papa sur le PC local.",
   "browser_specific_settings": {
     "gecko": {
@@ -10,7 +10,9 @@
   },
   "permissions": [
     "accountsRead",
+    "accountsFolders",
     "messagesRead",
+    "messagesMove",
     "compose",
     "nativeMessaging"
   ],
