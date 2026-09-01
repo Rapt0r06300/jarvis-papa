@@ -5,6 +5,9 @@ from pathlib import Path
 from threading import Lock
 from uuid import uuid4
 
+from jarvis_papa.config import settings
+from jarvis_papa.files import is_allowed_document
+
 
 @dataclass(frozen=True, slots=True)
 class AttachmentLease:
@@ -13,10 +16,11 @@ class AttachmentLease:
     name: str
     media_type: str
     expires_at: float
+    size: int
 
 
 class AttachmentBroker:
-    """Short-lived local file leases consumed by the Thunderbird extension."""
+    """Short-lived one-use local file leases consumed by the Thunderbird extension."""
 
     def __init__(self) -> None:
         self._leases: dict[str, AttachmentLease] = {}
@@ -24,15 +28,24 @@ class AttachmentBroker:
 
     def register(self, raw_path: str | Path, ttl_seconds: int = 300) -> AttachmentLease:
         path = Path(raw_path).expanduser().resolve()
-        if not path.is_file():
-            raise FileNotFoundError(path)
+        if not is_allowed_document(path):
+            raise PermissionError("Ce fichier n'est pas dans un dossier/document autorisé par Jarvis.")
+        try:
+            size = path.stat().st_size
+        except OSError as exc:
+            raise FileNotFoundError(path) from exc
+        if size > settings.attachment_max_bytes:
+            raise ValueError(
+                f"Pièce jointe trop volumineuse ({size} octets, maximum {settings.attachment_max_bytes})."
+            )
         media_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
         lease = AttachmentLease(
             token=uuid4().hex,
             path=path,
             name=path.name,
             media_type=media_type,
-            expires_at=time.time() + max(30, ttl_seconds),
+            expires_at=time.time() + max(30, min(ttl_seconds, 900)),
+            size=size,
         )
         with self._lock:
             self._cleanup_locked()
@@ -43,7 +56,7 @@ class AttachmentBroker:
         with self._lock:
             self._cleanup_locked()
             lease = self._leases.pop(token, None)
-        if lease and lease.expires_at >= time.time():
+        if lease and lease.expires_at >= time.time() and lease.path.is_file():
             return lease
         return None
 
