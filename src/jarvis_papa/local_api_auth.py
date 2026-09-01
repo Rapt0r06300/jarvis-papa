@@ -38,10 +38,9 @@ def local_api_token() -> str:
     if token:
         return token
 
-    generated = secrets.token_urlsafe(48)
-    store.set(_TOKEN_NAME, generated)
+    store.set(_TOKEN_NAME, secrets.token_urlsafe(48))
     verified = store.get(_TOKEN_NAME).strip()
-    if not verified or not secrets.compare_digest(generated, verified):
+    if not verified:
         raise RuntimeError("Jarvis n'a pas pu protéger son jeton API local.")
     return verified
 
