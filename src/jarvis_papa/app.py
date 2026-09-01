@@ -15,6 +15,7 @@ from jarvis_papa.confirmations import confirmation_manager
 from jarvis_papa.conversation import conversation_manager
 from jarvis_papa.dashboard_secure import dashboard_html as secure_dashboard_html
 from jarvis_papa.diagnostics import diagnostics
+from jarvis_papa.intelligence_routes import router as intelligence_router
 from jarvis_papa.mail_intelligence import intelligent_mail_assistant
 from jarvis_papa.memory_semantic import semantic_memory_store
 from jarvis_papa.speech import SpeechEvent, speech_coordinator
@@ -22,9 +23,6 @@ from jarvis_papa.thunderbird import thunderbird_bridge_state
 from jarvis_papa.thunderbird_probe_routes import router as thunderbird_probe_router
 from jarvis_papa.voice import voice_service
 
-# Keep one protected memory implementation and one mail intelligence implementation
-# across the whole process. Existing modules import their collaborators at module
-# scope, so wiring them here upgrades behaviour without duplicating state.
 routes_module.mail_assistant = intelligent_mail_assistant
 routes_module.memory_store = semantic_memory_store
 routes_module.dashboard_html = secure_dashboard_html
@@ -36,6 +34,7 @@ app = routes_module.create_app()
 app.include_router(advanced_router)
 app.include_router(browser_workflow_router)
 app.include_router(thunderbird_probe_router)
+app.include_router(intelligence_router)
 voice_service.prewarm_async()
 
 
@@ -83,9 +82,7 @@ def conversation_turn(request: ConversationTurnRequest) -> dict[str, object]:
     )
     spoken = False
     if request.speak and turn.answer and turn.final_state != "cancelled":
-        _, spoken = speech_coordinator.handle(
-            SpeechEvent(text=turn.answer, user_initiated=True)
-        )
+        _, spoken = speech_coordinator.handle(SpeechEvent(text=turn.answer, user_initiated=True))
     return {**turn.to_dict(), "spoken": spoken}
 
 
@@ -94,7 +91,6 @@ def conversation_cancel(
     conversation_id: str,
     request: ConversationCancelRequest,
 ) -> dict[str, object]:
-    # Stop/cancel is a safety action: it prevents further work and must remain immediate.
     cancelled = conversation_manager.cancel(conversation_id, request.request_id)
     return {
         "ok": cancelled,
