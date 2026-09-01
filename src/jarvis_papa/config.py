@@ -52,7 +52,6 @@ class Settings(BaseSettings):
     speech_enabled: bool = True
     speech_repeat_cooldown_seconds: int = 300
 
-    # Voice output: premium cloud first, high-quality local fallback, Windows last resort.
     voice_provider_order: str = "elevenlabs,azure,qwen3,windows"
     voice_sensitive_provider_order: str = "qwen3,windows"
     voice_cloud_for_sensitive_content: bool = False
@@ -124,6 +123,8 @@ class Settings(BaseSettings):
     ai_provider: str = "ollama"
     ollama_url: str = "http://127.0.0.1:11434"
     ollama_model: str = "qwen3:4b"
+    ollama_fast_model: str = "qwen3:4b"
+    ollama_reasoning_model: str = "qwen3:4b"
     ai_timeout_seconds: float = 25.0
     ai_temperature: float = 0.2
 
