@@ -146,22 +146,28 @@ class ThunderbirdCommandQueue:
 
     @staticmethod
     def _safe_result(result: dict[str, object]) -> dict[str, object]:
-        allowed = {
+        scalar_fields = {
             "mode",
             "header_message_id",
             "sent_copy_count",
             "compose_tab_id",
+            "compose_digest",
+            "recipient_display",
+            "subject",
             "duplicate",
             "verified",
         }
         clean: dict[str, object] = {}
         for key, value in result.items():
-            if key not in allowed:
+            if key == "attachment_names" and isinstance(value, list):
+                clean[key] = [str(item)[:240] for item in value[:10]]
+                continue
+            if key not in scalar_fields:
                 continue
             if value is None or isinstance(value, (bool, int, float)):
                 clean[key] = value
             elif isinstance(value, str):
-                clean[key] = value[:500]
+                clean[key] = value[:1000]
         return clean
 
     def _trim_locked(self) -> None:
