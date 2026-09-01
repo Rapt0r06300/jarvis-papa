@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "jarvis-papa"
-version = "0.5.0"
-description = "Assistant personnel local-first pour Windows"
+version = "0.6.0"
+description = "Assistant personnel local-first natif pour Windows"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -14,6 +14,7 @@ dependencies = [
   "pydantic-settings>=2.10,<3.0",
   "playwright>=1.55,<2.0",
   "httpx>=0.28,<1.0",
+  "PySide6>=6.9,<7.0",
   "pywinauto>=0.6.9; sys_platform == 'win32'",
 ]
 
@@ -22,9 +23,14 @@ dev = [
   "pytest>=8.4,<9.0",
   "ruff>=0.12,<1.0",
 ]
+build = [
+  "pyinstaller>=6.22,<7.0",
+  "pillow>=11.3,<13.0",
+]
 
 [project.scripts]
-jarvis-papa = "jarvis_papa.main:run"
+jarvis-papa = "jarvis_papa.desktop_app:run"
+jarvis-papa-server = "jarvis_papa.main:run"
 jarvis-native-host = "jarvis_papa.native_host:run"
 jarvis-diagnostic = "jarvis_papa.diagnostics:run_cli"
 
