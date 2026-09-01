@@ -16,7 +16,7 @@ class UIAResult:
 
 
 class WindowsUIAutomation:
-    """Semantic Windows automation through the Microsoft UI Automation backend."""
+    """Semantic Windows automation through UI Automation, never blind coordinates."""
 
     @property
     def available(self) -> bool:
@@ -47,10 +47,7 @@ class WindowsUIAutomation:
         if not self.available:
             return UIAResult(False, "inspect_window", "UI Automation n'est pas disponible sur ce système.")
         try:
-            from pywinauto import Desktop
-
-            window = Desktop(backend="uia").window(title_re=f".*{re.escape(title)}.*")
-            window.wait("exists ready", timeout=5)
+            window = self._unique_window(title)
             data = []
             for control in window.descendants()[:limit]:
                 name = control.window_text().strip()
@@ -71,10 +68,7 @@ class WindowsUIAutomation:
         if not self.available:
             return UIAResult(False, "focus_window", "UI Automation n'est pas disponible sur ce système.")
         try:
-            from pywinauto import Desktop
-
-            window = Desktop(backend="uia").window(title_re=f".*{re.escape(title)}.*")
-            window.wait("exists ready", timeout=5)
+            window = self._unique_window(title)
             window.set_focus()
         except Exception as exc:  # noqa: BLE001 - pywinauto wraps multiple COM/UIA errors.
             return UIAResult(False, "focus_window", str(exc))
@@ -90,21 +84,18 @@ class WindowsUIAutomation:
         if not self.available:
             return UIAResult(False, "invoke_control", "UI Automation n'est pas disponible sur ce système.")
         try:
-            from pywinauto import Desktop
-
-            window = Desktop(backend="uia").window(title_re=f".*{re.escape(window_title)}.*")
-            window.wait("exists ready", timeout=5)
-            kwargs: dict[str, str] = {"title": control_name}
-            if control_type:
-                kwargs["control_type"] = control_type
-            control = window.child_window(**kwargs).wrapper_object()
-            if hasattr(control, "invoke"):
-                control.invoke()
-            else:
-                control.click_input()
+            window = self._unique_window(window_title)
+            control = self._unique_control(window, control_name, control_type)
+            if not hasattr(control, "invoke"):
+                return UIAResult(
+                    False,
+                    "invoke_control",
+                    "Ce contrôle ne fournit pas une action UI Automation sûre. Jarvis refuse le clic aveugle.",
+                )
+            control.invoke()
         except Exception as exc:  # noqa: BLE001 - pywinauto wraps multiple COM/UIA errors.
             return UIAResult(False, "invoke_control", str(exc))
-        return UIAResult(True, "invoke_control", "Contrôle activé.")
+        return UIAResult(True, "invoke_control", "Contrôle UI Automation activé.")
 
     def set_text(
         self,
@@ -116,19 +107,55 @@ class WindowsUIAutomation:
         if not self.available:
             return UIAResult(False, "set_text", "UI Automation n'est pas disponible sur ce système.")
         try:
-            from pywinauto import Desktop
-
-            window = Desktop(backend="uia").window(title_re=f".*{re.escape(window_title)}.*")
-            window.wait("exists ready", timeout=5)
-            control = window.child_window(title=control_name).wrapper_object()
-            if hasattr(control, "set_edit_text"):
-                control.set_edit_text(text)
-            else:
-                control.set_focus()
-                control.type_keys(text, with_spaces=True, set_foreground=False)
+            window = self._unique_window(window_title)
+            control = self._unique_control(window, control_name, "Edit")
+            if not hasattr(control, "set_edit_text"):
+                return UIAResult(
+                    False,
+                    "set_text",
+                    "Ce champ ne permet pas une saisie UI Automation vérifiable. Jarvis n'utilise pas de frappe aveugle.",
+                )
+            control.set_edit_text(text)
+            actual = control.window_text()
+            if actual != text:
+                return UIAResult(False, "set_text", "La saisie n'a pas pu être vérifiée ; Jarvis la considère comme échouée.")
         except Exception as exc:  # noqa: BLE001 - pywinauto wraps multiple COM/UIA errors.
             return UIAResult(False, "set_text", str(exc))
-        return UIAResult(True, "set_text", "Texte saisi dans le contrôle.")
+        return UIAResult(True, "set_text", "Texte saisi et vérifié dans le contrôle.")
+
+    @staticmethod
+    def _unique_window(title: str):
+        from pywinauto import Desktop
+
+        pattern = re.compile(f".*{re.escape(title.strip())}.*", re.I)
+        matches = [
+            window
+            for window in Desktop(backend="uia").windows()
+            if pattern.fullmatch(window.window_text().strip())
+        ]
+        if not matches:
+            raise LookupError("Fenêtre Windows introuvable.")
+        if len(matches) > 1:
+            raise LookupError("Plusieurs fenêtres correspondent. Jarvis refuse de choisir au hasard.")
+        matches[0].wait("exists ready", timeout=5)
+        return matches[0]
+
+    @staticmethod
+    def _unique_control(window, control_name: str, control_type: str | None = None):
+        expected = control_name.strip().casefold()
+        matches = []
+        for control in window.descendants():
+            if control.window_text().strip().casefold() != expected:
+                continue
+            actual_type = str(control.element_info.control_type or "")
+            if control_type and actual_type.casefold() != control_type.casefold():
+                continue
+            matches.append(control)
+        if not matches:
+            raise LookupError("Contrôle Windows introuvable.")
+        if len(matches) > 1:
+            raise LookupError("Plusieurs contrôles correspondent. Jarvis refuse de choisir au hasard.")
+        return matches[0]
 
 
 windows_uia = WindowsUIAutomation()
