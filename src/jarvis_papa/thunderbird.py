@@ -27,6 +27,39 @@ class ThunderbirdCommand:
         return asdict(self) | {"acknowledged": self.acknowledged}
 
 
+class ThunderbirdBridgeState:
+    """Tracks whether the Thunderbird extension/native host is actually alive."""
+
+    def __init__(self) -> None:
+        self._lock = Lock()
+        self._last_seen: float | None = None
+        self._source = ""
+
+    def mark_seen(self, source: str = "native_host") -> None:
+        with self._lock:
+            self._last_seen = time.time()
+            self._source = source[:80]
+
+    def snapshot(self, *, timeout_seconds: float = 12.0) -> dict[str, object]:
+        with self._lock:
+            last_seen = self._last_seen
+            source = self._source
+        if last_seen is None:
+            return {
+                "connected": False,
+                "last_seen": None,
+                "age_seconds": None,
+                "source": source,
+            }
+        age = max(0.0, time.time() - last_seen)
+        return {
+            "connected": age <= timeout_seconds,
+            "last_seen": last_seen,
+            "age_seconds": round(age, 2),
+            "source": source,
+        }
+
+
 class ThunderbirdCommandQueue:
     def __init__(self, path: Path | None = None, max_items: int = 200) -> None:
         self.path = path or (settings.runtime_dir / "thunderbird_commands.json")
@@ -89,6 +122,13 @@ class ThunderbirdCommandQueue:
         with self._lock:
             return list(reversed(self._commands[-max(1, limit) :]))
 
+    def summary(self) -> dict[str, int]:
+        with self._lock:
+            pending = sum(item.status == "pending" for item in self._commands)
+            failed = sum(item.status == "failed" for item in self._commands)
+            succeeded = sum(item.status == "succeeded" for item in self._commands)
+        return {"pending": pending, "failed": failed, "succeeded": succeeded}
+
     def _trim_locked(self) -> None:
         if len(self._commands) <= self.max_items:
             return
@@ -135,4 +175,5 @@ class ThunderbirdCommandQueue:
         temporary.replace(self.path)
 
 
+thunderbird_bridge_state = ThunderbirdBridgeState()
 thunderbird_commands = ThunderbirdCommandQueue()
