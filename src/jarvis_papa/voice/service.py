@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import heapq
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -16,6 +18,9 @@ from typing import ClassVar
 import httpx
 
 from jarvis_papa.config import settings
+from jarvis_papa.governance import circuit_breakers
+from jarvis_papa.pronunciation import pronunciation_lexicon
+from jarvis_papa.runtime_intelligence import resource_governor
 from jarvis_papa.voice.providers import (
     AzureSpeechProvider,
     ElevenLabsProvider,
@@ -157,6 +162,7 @@ class VoiceService:
         "normal": 2,
         "low": 3,
     }
+    _CACHE_LIMIT = 24
 
     def __init__(self, providers: dict[str, VoiceProvider] | None = None) -> None:
         self.providers = providers or {
@@ -193,9 +199,18 @@ class VoiceService:
         names = tuple(item.strip().lower() for item in configured.split(",") if item.strip())
         if names:
             return names
-        return ("qwen3", "windows") if sensitive else ("elevenlabs", "azure", "qwen3", "windows")
+        return ("qwen3", "windows") if sensitive else (
+            "elevenlabs",
+            "azure",
+            "qwen3",
+            "windows",
+        )
 
     def prewarm_async(self) -> bool:
+        if not settings.qwen3_tts_prewarm or not resource_governor.voice_keep_warm():
+            return False
+        if not circuit_breakers.allow("voice.qwen3"):
+            return False
         provider = self.providers.get("qwen3")
         if not isinstance(provider, Qwen3TTSProvider):
             return False
@@ -234,6 +249,7 @@ class VoiceService:
             "sensitive_provider_order": list(self.provider_order(sensitive=True)),
             "cloud_for_sensitive_content": settings.voice_cloud_for_sensitive_content,
             "prewarm_enabled": settings.qwen3_tts_prewarm,
+            "prewarm_allowed_by_resources": resource_governor.voice_keep_warm(),
             "providers": provider_states,
             "queue_length": queue_length,
             "speaking": current is not None,
@@ -242,9 +258,16 @@ class VoiceService:
         }
 
     def synthesize(self, text: str, *, sensitive: bool = False) -> VoiceResult:
-        cleaned = " ".join(text.split()).strip()
+        cleaned = pronunciation_lexicon.apply(" ".join(text.split()).strip())
         if not cleaned:
             return VoiceResult(ok=False, errors=("Texte vocal vide.",), sensitive=sensitive)
+
+        cached = self._cached_result(cleaned, sensitive=sensitive)
+        if cached is not None:
+            with self._lock:
+                self._last_result = cached
+            return cached
+
         stem = self.output_dir / f"voice-{uuid.uuid4().hex}"
         errors: list[str] = []
         for name in self.provider_order(sensitive=sensitive):
@@ -252,19 +275,31 @@ class VoiceService:
             if provider is None:
                 errors.append(f"{name}: fournisseur inconnu")
                 continue
+            if name == "qwen3" and not circuit_breakers.allow("voice.qwen3"):
+                errors.append("qwen3: temporairement suspendu après plusieurs échecs")
+                continue
             if not provider.available:
                 errors.append(f"{name}: indisponible")
                 continue
             try:
                 artifact = provider.synthesize(cleaned, stem)
             except (RuntimeError, OSError, httpx.HTTPError, subprocess.SubprocessError) as exc:
+                if name == "qwen3":
+                    circuit_breakers.record_failure("voice.qwen3")
                 errors.append(f"{name}: {type(exc).__name__}: {exc}")
                 continue
+            if name == "qwen3":
+                circuit_breakers.record_success("voice.qwen3")
             duration = self._estimate_duration(cleaned)
+            path = self._store_cache(
+                cleaned,
+                artifact.path,
+                sensitive=sensitive,
+            ) or artifact.path
             result = VoiceResult(
                 ok=True,
                 provider=artifact.provider,
-                file_name=artifact.path.name,
+                file_name=path.name,
                 media_type=artifact.media_type,
                 duration_estimate_seconds=duration,
                 errors=tuple(errors),
@@ -398,6 +433,52 @@ class VoiceService:
                 utterance_id=item.utterance_id,
             )
 
+    def _cached_result(self, text: str, *, sensitive: bool) -> VoiceResult | None:
+        if sensitive or len(text) > 140:
+            return None
+        key = self._cache_key(text)
+        matches = sorted(self.output_dir.glob(f"voice-cache-{key}.*"))
+        for path in matches:
+            if not path.is_file():
+                continue
+            media_type = "audio/wav" if path.suffix.casefold() == ".wav" else "audio/mpeg"
+            return VoiceResult(
+                ok=True,
+                provider="cache",
+                file_name=path.name,
+                media_type=media_type,
+                duration_estimate_seconds=self._estimate_duration(text),
+                sensitive=False,
+            )
+        return None
+
+    def _store_cache(self, text: str, source: Path, *, sensitive: bool) -> Path | None:
+        if sensitive or len(text) > 140 or not source.is_file():
+            return None
+        suffix = source.suffix.casefold()
+        if suffix not in {".wav", ".mp3"}:
+            return None
+        target = self.output_dir / f"voice-cache-{self._cache_key(text)}{suffix}"
+        try:
+            if not target.exists():
+                shutil.copy2(source, target)
+            return target
+        except OSError:
+            return None
+
+    def _cache_key(self, text: str) -> str:
+        identity = "|".join(
+            (
+                text,
+                ",".join(self.provider_order()),
+                settings.qwen3_tts_model,
+                settings.azure_voice_name,
+                settings.elevenlabs_voice_id,
+                settings.qwen3_tts_instruction,
+            )
+        )
+        return hashlib.sha256(identity.encode("utf-8")).hexdigest()[:24]
+
     @staticmethod
     def _split_text(text: str, limit: int = 280) -> list[str]:
         cleaned = " ".join(text.split()).strip()
@@ -436,12 +517,26 @@ class VoiceService:
         return min(45.0, max(1.6, 0.55 + words / (2.6 * speed)))
 
     def _cleanup_old_files(self) -> None:
-        files = sorted(
-            (item for item in self.output_dir.glob("voice-*") if item.is_file()),
+        transient = sorted(
+            (
+                item
+                for item in self.output_dir.glob("voice-*")
+                if item.is_file() and not item.name.startswith("voice-cache-")
+            ),
             key=lambda item: item.stat().st_mtime,
             reverse=True,
         )
-        for item in files[settings.voice_cache_files :]:
+        for item in transient[settings.voice_cache_files :]:
+            try:
+                item.unlink()
+            except OSError:
+                pass
+        cached = sorted(
+            (item for item in self.output_dir.glob("voice-cache-*") if item.is_file()),
+            key=lambda item: item.stat().st_mtime,
+            reverse=True,
+        )
+        for item in cached[self._CACHE_LIMIT :]:
             try:
                 item.unlink()
             except OSError:
