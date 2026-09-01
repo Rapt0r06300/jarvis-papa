@@ -42,6 +42,7 @@ jobs:
             --name Jarvis `
             --icon packaging/jarvis.ico `
             --paths src `
+            --add-data "src/jarvis_papa/voice/qwen_worker.py;jarvis_papa/voice" `
             packaging/desktop_entry.py
 
       - name: Build Thunderbird native host
@@ -67,6 +68,8 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
+          $qwenWorker = "dist\Jarvis\_internal\jarvis_papa\voice\qwen_worker.py"
+          if (-not (Test-Path $qwenWorker)) { throw "Qwen worker is missing from Jarvis bundle" }
           $process = Start-Process -FilePath "dist\Jarvis\Jarvis.exe" -PassThru
           $healthy = $false
           try {
@@ -125,6 +128,8 @@ jobs:
           if ($installer.ExitCode -ne 0) { throw "Installer failed with code $($installer.ExitCode)" }
           $installedExe = Join-Path $installDir "Jarvis.exe"
           if (-not (Test-Path $installedExe)) { throw "Installed Jarvis.exe is missing" }
+          $installedQwenWorker = Join-Path $installDir "_internal\jarvis_papa\voice\qwen_worker.py"
+          if (-not (Test-Path $installedQwenWorker)) { throw "Installed Qwen worker is missing" }
 
           $process = Start-Process -FilePath $installedExe -WorkingDirectory $installDir -PassThru
           $healthy = $false
