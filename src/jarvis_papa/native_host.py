@@ -8,7 +8,6 @@ from typing import Any
 
 from jarvis_papa.config import settings
 
-
 _write_lock = threading.Lock()
 
 
