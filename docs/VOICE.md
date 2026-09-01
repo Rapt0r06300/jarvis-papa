@@ -7,9 +7,39 @@ Jarvis est conçu pour parler à Robert avec une voix féminine française douce
 1. **ElevenLabs** — priorité qualité maximale. Modèle par défaut `eleven_v3`, langue française, débit légèrement ralenti et expressivité modérée.
 2. **Azure Speech** — excellent compromis qualité/fiabilité. Voix par défaut `fr-FR-VivienneMultilingualNeural`.
 3. **Qwen3-TTS local** — secours hors ligne. Modèle par défaut `Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign`, avec une consigne de voix féminine française douce et très articulée.
-4. **Windows** — dernier recours uniquement afin de ne jamais laisser Robert sans réponse vocale.
+4. **Windows** — dernier recours afin de ne jamais laisser Robert sans réponse vocale.
 
 Jarvis essaie les fournisseurs dans cet ordre. Une panne ou une configuration absente déclenche automatiquement le suivant.
+
+Pour les contenus marqués sensibles, l'ordre par défaut est uniquement :
+
+```text
+qwen3,windows
+```
+
+Un contenu sensible n'est donc pas envoyé à ElevenLabs ou Azure tant que `JARVIS_VOICE_CLOUD_FOR_SENSITIVE_CONTENT=false`.
+
+## Worker Qwen3-TTS persistant
+
+Le modèle Qwen est lourd. Le recharger à chaque phrase rendrait une secrétaire vocale beaucoup trop lente. Jarvis utilise donc un worker local séparé :
+
+- le modèle est chargé une seule fois ;
+- le worker écoute uniquement sur `127.0.0.1` ;
+- chaque démarrage de Jarvis crée un jeton d'authentification aléatoire connu uniquement du processus principal et du worker ;
+- Jarvis préchauffe le modèle en arrière-plan si `JARVIS_QWEN3_TTS_PREWARM=true` ;
+- une seule synthèse Qwen est exécutée à la fois pour éviter de saturer le GPU ;
+- le worker se ferme après une période d'inactivité configurable ;
+- un worker mort est recréé automatiquement lors de la prochaine synthèse ;
+- si le port prévu est encore occupé par un ancien processus après un crash, Jarvis choisit automatiquement un autre port local libre ;
+- les fichiers audio produits doivent rester dans le dossier vocal runtime autorisé.
+
+Le statut détaillé est disponible dans :
+
+```text
+GET /api/voice/status
+```
+
+Pour Qwen, Jarvis indique notamment si le worker est en préchauffage, vivant, sain, ainsi que son PID et son port lorsqu'ils existent.
 
 ## Configuration
 
@@ -42,6 +72,13 @@ INSTALLER_VOIX_LOCALE.bat
 ```
 
 Cet installateur crée un environnement Python séparé `.venv-qwen-tts`. Le modèle est volumineux et est téléchargé lors de la première utilisation.
+
+Réglages utiles :
+
+- `JARVIS_QWEN3_TTS_WORKER_PORT=8766`
+- `JARVIS_QWEN3_TTS_STARTUP_TIMEOUT_SECONDS=180`
+- `JARVIS_QWEN3_TTS_IDLE_TIMEOUT_SECONDS=900`
+- `JARVIS_QWEN3_TTS_PREWARM=true`
 
 La configuration par défaut utilise le GPU CUDA. Pour un PC sans GPU compatible, modifier `JARVIS_QWEN3_TTS_DEVICE` dans `.env`, mais la génération CPU sera beaucoup plus lente.
 
