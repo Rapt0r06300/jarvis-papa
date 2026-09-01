@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
 
+import httpx
+
 from jarvis_papa.config import settings
 from jarvis_papa.voice.providers import (
     AzureSpeechProvider,
@@ -149,7 +151,7 @@ class VoiceService:
                 continue
             try:
                 artifact = provider.synthesize(cleaned, stem)
-            except Exception as exc:  # provider failures must trigger the next fallback
+            except (RuntimeError, OSError, httpx.HTTPError, subprocess.SubprocessError) as exc:
                 errors.append(f"{name}: {type(exc).__name__}: {exc}")
                 continue
             duration = self._estimate_duration(cleaned)
