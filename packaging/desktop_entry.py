@@ -22,8 +22,10 @@ def _prepare_windowed_runtime() -> None:
 
 _prepare_windowed_runtime()
 
+from jarvis_papa.onboarding import run_first_launch_onboarding
 from jarvis_papa.professional_desktop import run
 
 
 if __name__ == "__main__":
+    run_first_launch_onboarding()
     run()
