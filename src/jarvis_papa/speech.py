@@ -21,6 +21,8 @@ class SpeechEvent:
     user_initiated: bool = False
     action_required: bool = False
     dedupe_key: str | None = None
+    sensitive: bool = False
+    privacy_fallback_text: str | None = None
 
 
 @dataclass(frozen=True)
@@ -51,7 +53,7 @@ class SpeechPolicy:
 
 
 class SmartSpeaker:
-    """Generate a natural French voice, with automatic provider fallback."""
+    """Generate natural French speech while respecting local privacy rules."""
 
     @property
     def available(self) -> bool:
@@ -59,8 +61,15 @@ class SmartSpeaker:
         providers = status.get("providers", {})
         return any(bool(item.get("available")) for item in providers.values())
 
-    def speak_async(self, text: str) -> bool:
-        return voice_service.speak(text).ok
+    def speak_async(self, event: SpeechEvent) -> bool:
+        result = voice_service.speak(event.text, sensitive=event.sensitive)
+        if result.ok:
+            return True
+        # If sensitive local TTS is unavailable, do not leak the mail text to a cloud voice.
+        # A generic, non-sensitive notification may still use the premium provider chain.
+        if event.sensitive and event.privacy_fallback_text:
+            return voice_service.speak(event.privacy_fallback_text, sensitive=False).ok
+        return False
 
 
 class SpeechCoordinator:
@@ -75,7 +84,7 @@ class SpeechCoordinator:
         decision = self.policy.evaluate(event, duplicate=duplicate)
         spoken = False
         if decision.should_speak:
-            spoken = self.speaker.speak_async(event.text)
+            spoken = self.speaker.speak_async(event)
             if event.dedupe_key and spoken:
                 self._remember(event.dedupe_key)
         return decision, spoken
