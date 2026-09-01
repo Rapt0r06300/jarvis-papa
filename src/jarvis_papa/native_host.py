@@ -109,6 +109,32 @@ def _poll_commands(stop_event: threading.Event) -> None:
             send_message({"type": "command", "command": item})
 
 
+def _ack_command(
+    command_id: str,
+    *,
+    ok: bool,
+    error: str | None,
+    result: dict[str, object],
+) -> None:
+    payload: dict[str, object] = {
+        "ok": ok,
+        "error": error,
+        "result": result,
+    }
+    response = _api_request(
+        "POST",
+        f"/api/advanced/thunderbird/commands/{command_id}/ack",
+        payload,
+    )
+    if response is None:
+        # Backward-compatible bridge for an older Jarvis still running during an upgrade.
+        _api_request(
+            "POST",
+            f"/api/thunderbird/commands/{command_id}/ack",
+            {"ok": ok, "error": error},
+        )
+
+
 def _handle_message(message: dict[str, Any]) -> None:
     message_type = message.get("type")
 
@@ -133,10 +159,13 @@ def _handle_message(message: dict[str, Any]) -> None:
             return
         ok = bool(message.get("ok"))
         error = message.get("error")
-        _api_request(
-            "POST",
-            f"/api/thunderbird/commands/{command_id}/ack",
-            {"ok": ok, "error": str(error)[:1200] if error else None},
+        raw_result = message.get("result")
+        result = raw_result if isinstance(raw_result, dict) else {}
+        _ack_command(
+            command_id,
+            ok=ok,
+            error=str(error)[:1200] if error else None,
+            result=result,
         )
         _heartbeat()
         with _sent_lock:
