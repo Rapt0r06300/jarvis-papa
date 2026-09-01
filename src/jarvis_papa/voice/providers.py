@@ -4,6 +4,7 @@ import atexit
 import base64
 import os
 import secrets
+import socket
 import subprocess
 import sys
 import threading
@@ -129,6 +130,7 @@ class Qwen3TTSProvider(VoiceProvider):
     def __init__(self) -> None:
         self._process: subprocess.Popen[bytes] | None = None
         self._token = secrets.token_urlsafe(32)
+        self._port = settings.qwen3_tts_worker_port
         self._startup_lock = threading.Lock()
         self._request_lock = threading.Lock()
         self._warming = False
@@ -141,14 +143,26 @@ class Qwen3TTSProvider(VoiceProvider):
 
     @property
     def _base_url(self) -> str:
-        return f"http://127.0.0.1:{settings.qwen3_tts_worker_port}"
+        return f"http://127.0.0.1:{self._port}"
 
     @property
     def _headers(self) -> dict[str, str]:
         return {"X-Jarvis-Qwen-Token": self._token}
 
+    def status(self) -> dict[str, object]:
+        process_alive = self._process is not None and self._process.poll() is None
+        healthy = self._healthy() if self.available and process_alive else False
+        return {
+            "available": self.available,
+            "warming": self._warming,
+            "worker_alive": process_alive,
+            "worker_healthy": healthy,
+            "port": self._port if process_alive or self._warming else None,
+            "pid": self._process.pid if process_alive and self._process is not None else None,
+        }
+
     def warm_async(self) -> bool:
-        if not self.available or self._healthy() or self._warming:
+        if not settings.qwen3_tts_prewarm or not self.available or self._healthy() or self._warming:
             return False
         self._warming = True
 
@@ -221,12 +235,13 @@ class Qwen3TTSProvider(VoiceProvider):
         output_root.mkdir(parents=True, exist_ok=True)
         log_path = (settings.runtime_dir / "qwen3-tts-worker.log").resolve()
         log_path.parent.mkdir(parents=True, exist_ok=True)
+        self._port = self._choose_worker_port()
         command = [
             settings.qwen3_tts_python,
             str(worker),
             "--serve",
             "--port",
-            str(settings.qwen3_tts_worker_port),
+            str(self._port),
             "--output-root",
             str(output_root),
             "--idle-timeout",
@@ -262,6 +277,23 @@ class Qwen3TTSProvider(VoiceProvider):
             time.sleep(0.5)
         self.shutdown()
         raise RuntimeError("Qwen3-TTS a dépassé le délai de démarrage autorisé.")
+
+    def _choose_worker_port(self) -> int:
+        preferred = settings.qwen3_tts_worker_port
+        if self._port_is_free(preferred):
+            return preferred
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.bind(("127.0.0.1", 0))
+            return int(probe.getsockname()[1])
+
+    @staticmethod
+    def _port_is_free(port: int) -> bool:
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+                probe.bind(("127.0.0.1", port))
+        except OSError:
+            return False
+        return True
 
     def _mark_worker_unhealthy(self) -> None:
         if self._process is not None and self._process.poll() is not None:
