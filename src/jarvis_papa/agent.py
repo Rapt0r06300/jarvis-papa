@@ -2,11 +2,13 @@ import json
 from dataclasses import asdict, dataclass
 from typing import Any, ClassVar
 
+from jarvis_papa.actions import action_queue
 from jarvis_papa.ai import AIUnavailable, local_ai
 from jarvis_papa.browser import browser_agent
 from jarvis_papa.desktop import desktop_controller
 from jarvis_papa.files import file_searcher
 from jarvis_papa.memory import memory_store
+from jarvis_papa.windows_automation import windows_uia
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,6 +25,14 @@ class JarvisAgent:
     """Read-oriented agent loop. Sensitive actions stay outside LLM tool access."""
 
     TOOLS: ClassVar[list[dict[str, Any]]] = [
+        {
+            "type": "function",
+            "function": {
+                "name": "pending_actions",
+                "description": "Voir les éléments importants qui attendent Robert dans Jarvis.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        },
         {
             "type": "function",
             "function": {
@@ -71,9 +81,32 @@ class JarvisAgent:
                 },
             },
         },
+        {
+            "type": "function",
+            "function": {
+                "name": "windows_list",
+                "description": "Lister les fenêtres Windows ouvertes, sans rien modifier.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "windows_inspect",
+                "description": "Inspecter les boutons et champs d'une fenêtre Windows sans cliquer.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"window_title": {"type": "string"}},
+                    "required": ["window_title"],
+                },
+            },
+        },
     ]
 
     def run(self, prompt: str) -> AgentResult:
+        if not local_ai.ready():
+            return AgentResult(False, "Le moteur IA local Ollama n'est pas disponible.")
+
         memory_context = memory_store.context_for(prompt)
         messages: list[dict[str, Any]] = [
             {
@@ -82,6 +115,7 @@ class JarvisAgent:
                     "Tu es Jarvis, assistant personnel prudent de Robert. "
                     "Utilise les outils seulement si nécessaire. Tu n'as accès qu'à des outils de lecture "
                     "ou d'ouverture non destructive. N'invente jamais le résultat d'une action. "
+                    "Pour un point de situation, consulte d'abord pending_actions. "
                     "Réponds en français, court et clair."
                 ),
             },
@@ -132,6 +166,18 @@ class JarvisAgent:
 
     @staticmethod
     def _execute_tool(name: str, arguments: dict[str, Any]) -> dict[str, object]:
+        if name == "pending_actions":
+            return {
+                "actions": [
+                    {
+                        "title": card.title,
+                        "summary": card.summary,
+                        "source": card.source,
+                        "importance": card.importance,
+                    }
+                    for card in action_queue.list()[:10]
+                ]
+            }
         if name == "search_files":
             query = str(arguments.get("query") or "")
             return {
@@ -145,6 +191,10 @@ class JarvisAgent:
         if name == "memory_recall":
             items = memory_store.recall(str(arguments.get("query") or ""), limit=6)
             return {"results": [item.to_dict() for item in items]}
+        if name == "windows_list":
+            return windows_uia.list_windows().to_dict()
+        if name == "windows_inspect":
+            return windows_uia.inspect_window(str(arguments.get("window_title") or "")).to_dict()
         return {"ok": False, "error": "outil_non_autorise"}
 
 
