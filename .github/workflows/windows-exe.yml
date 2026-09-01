@@ -56,20 +56,36 @@ jobs:
             --paths src `
             packaging/native_host_entry.py
 
-      - name: Build diagnostic executable
+      - name: Build graphical diagnostic executable
         shell: pwsh
         run: |
-          pyinstaller --noconfirm --clean --onefile --console `
+          pyinstaller --noconfirm --clean --onefile --windowed `
             --name JarvisDiagnostic `
             --icon packaging/jarvis.ico `
             --version-file packaging/version_info.txt `
             --paths src `
             packaging/diagnostic_entry.py
 
+      - name: Smoke test graphical diagnostic
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          $process = Start-Process -FilePath "dist\JarvisDiagnostic.exe" -PassThru
+          try {
+            Start-Sleep -Seconds 4
+            if ($process.HasExited) {
+              throw "JarvisDiagnostic.exe exited unexpectedly with code $($process.ExitCode)"
+            }
+          } finally {
+            if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force }
+          }
+
       - name: Smoke test packaged JarvisPapa.exe
         shell: pwsh
         env:
           QT_QPA_PLATFORM: offscreen
+          JARVIS_SKIP_ONBOARDING: "1"
         run: |
           $qwenWorker = "dist\JarvisPapa\_internal\jarvis_papa\voice\qwen_worker.py"
           if (-not (Test-Path $qwenWorker)) { throw "Qwen worker is missing from Jarvis Papa bundle" }
@@ -123,6 +139,7 @@ jobs:
         shell: pwsh
         env:
           QT_QPA_PLATFORM: offscreen
+          JARVIS_SKIP_ONBOARDING: "1"
         run: |
           $setup = (Resolve-Path "installer-output\JarvisPapa-Setup.exe").Path
           $installDir = Join-Path $env:RUNNER_TEMP "JarvisPapaInstalled"
