@@ -39,7 +39,7 @@ class WindowsUIAutomation:
                             "control_type": str(window.element_info.control_type or "Window"),
                         }
                     )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - pywinauto wraps multiple COM/UIA errors.
             return UIAResult(False, "list_windows", str(exc))
         return UIAResult(True, "list_windows", "Fenêtres détectées.", tuple(data))
 
@@ -63,7 +63,7 @@ class WindowsUIAutomation:
                             "automation_id": str(info.automation_id or ""),
                         }
                     )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - pywinauto wraps multiple COM/UIA errors.
             return UIAResult(False, "inspect_window", str(exc))
         return UIAResult(True, "inspect_window", "Contrôles UI détectés.", tuple(data))
 
@@ -76,7 +76,7 @@ class WindowsUIAutomation:
             window = Desktop(backend="uia").window(title_re=f".*{re.escape(title)}.*")
             window.wait("exists ready", timeout=5)
             window.set_focus()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - pywinauto wraps multiple COM/UIA errors.
             return UIAResult(False, "focus_window", str(exc))
         return UIAResult(True, "focus_window", "Fenêtre activée.")
 
@@ -102,7 +102,7 @@ class WindowsUIAutomation:
                 control.invoke()
             else:
                 control.click_input()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - pywinauto wraps multiple COM/UIA errors.
             return UIAResult(False, "invoke_control", str(exc))
         return UIAResult(True, "invoke_control", "Contrôle activé.")
 
@@ -126,7 +126,7 @@ class WindowsUIAutomation:
             else:
                 control.set_focus()
                 control.type_keys(text, with_spaces=True, set_foreground=False)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - pywinauto wraps multiple COM/UIA errors.
             return UIAResult(False, "set_text", str(exc))
         return UIAResult(True, "set_text", "Texte saisi dans le contrôle.")
 
