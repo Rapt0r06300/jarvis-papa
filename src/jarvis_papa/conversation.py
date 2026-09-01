@@ -19,6 +19,7 @@ class ConversationSession:
     updated_at: float
     messages: list[dict[str, str]] = field(default_factory=list)
     observations: list[dict[str, object]] = field(default_factory=list)
+    active_request_ids: set[str] = field(default_factory=set)
     cancelled_request_ids: set[str] = field(default_factory=set)
 
 
@@ -90,6 +91,7 @@ class ConversationManager:
         with self._lock:
             history = list(session.messages[-self.MAX_MESSAGES :])
             context = list(session.observations[-self.MAX_OBSERVATIONS :])
+            session.active_request_ids.add(request_id)
 
         route = self._resolve_route(text, context)
 
@@ -98,13 +100,19 @@ class ConversationManager:
                 current = self._sessions.get(session.id)
                 return bool(current and request_id in current.cancelled_request_ids)
 
-        result = jarvis_agent.run(
-            text,
-            history=history,
-            conversation_context=context,
-            route=route,
-            is_cancelled=is_cancelled,
-        )
+        try:
+            result = jarvis_agent.run(
+                text,
+                history=history,
+                conversation_context=context,
+                route=route,
+                is_cancelled=is_cancelled,
+            )
+        finally:
+            with self._lock:
+                current = self._sessions.get(session.id)
+                if current is not None:
+                    current.active_request_ids.discard(request_id)
 
         with self._lock:
             current = self._sessions.get(session.id)
@@ -136,7 +144,7 @@ class ConversationManager:
             return False
         with self._lock:
             session = self._sessions.get(conversation_id)
-            if session is None:
+            if session is None or request_id not in session.active_request_ids:
                 return False
             session.cancelled_request_ids.add(request_id)
             session.updated_at = time.time()
@@ -147,6 +155,9 @@ class ConversationManager:
         if not conversation_id:
             return False
         with self._lock:
+            session = self._sessions.get(conversation_id)
+            if session is None or session.active_request_ids:
+                return False
             return self._sessions.pop(conversation_id, None) is not None
 
     def snapshot(self, conversation_id: str) -> dict[str, object] | None:
@@ -162,6 +173,7 @@ class ConversationManager:
                 "created_at": session.created_at,
                 "updated_at": session.updated_at,
                 "messages": list(session.messages),
+                "busy": bool(session.active_request_ids),
             }
 
     def _get_or_create(self, conversation_id: str | None) -> ConversationSession:
@@ -180,9 +192,11 @@ class ConversationManager:
             session = ConversationSession(session_id, now, now)
             self._sessions[session.id] = session
             if len(self._sessions) > self.MAX_SESSIONS:
-                oldest = min(self._sessions.values(), key=lambda item: item.updated_at)
-                if oldest.id != session.id:
-                    self._sessions.pop(oldest.id, None)
+                idle_sessions = [item for item in self._sessions.values() if not item.active_request_ids]
+                if idle_sessions:
+                    oldest = min(idle_sessions, key=lambda item: item.updated_at)
+                    if oldest.id != session.id:
+                        self._sessions.pop(oldest.id, None)
             return session
 
     @classmethod
@@ -223,7 +237,8 @@ class ConversationManager:
         expired = [
             key
             for key, session in self._sessions.items()
-            if now - session.updated_at > self.SESSION_TTL_SECONDS
+            if not session.active_request_ids
+            and now - session.updated_at > self.SESSION_TTL_SECONDS
         ]
         for key in expired:
             self._sessions.pop(key, None)
