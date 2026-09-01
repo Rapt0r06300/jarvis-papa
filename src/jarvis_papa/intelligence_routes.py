@@ -8,7 +8,7 @@ from jarvis_papa.evaluation import improvement_lab
 from jarvis_papa.governance import circuit_breakers, kill_switch
 from jarvis_papa.knowledge import local_document_rag
 from jarvis_papa.proactivity import briefing_service, proactive_events
-from jarvis_papa.procedural_memory import ProcedureCandidate, procedural_memory
+from jarvis_papa.procedural_memory import procedural_memory
 from jarvis_papa.pronunciation import pronunciation_lexicon
 from jarvis_papa.runtime_intelligence import (
     reliability_map,
@@ -72,9 +72,7 @@ def briefing() -> dict[str, object]:
 
 @router.get("/events")
 def events(after: int = 0) -> dict[str, object]:
-    return {
-        "events": [item.to_dict() for item in proactive_events.after(max(0, int(after)))]
-    }
+    return {"events": [item.to_dict() for item in proactive_events.after(max(0, int(after)))]}
 
 
 @router.post("/knowledge/search")
