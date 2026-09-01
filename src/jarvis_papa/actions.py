@@ -19,6 +19,15 @@ class ActionKind(StrEnum):
     DISMISS = "dismiss"
 
 
+READ_ONLY_ACTION_KINDS = frozenset(
+    {
+        ActionKind.OPEN_EMAIL,
+        ActionKind.OPEN_FILE,
+        ActionKind.SEARCH_FILES,
+    }
+)
+
+
 @dataclass(slots=True)
 class ActionOption:
     id: str
@@ -26,6 +35,12 @@ class ActionOption:
     kind: ActionKind
     payload: dict[str, object] = field(default_factory=dict)
     requires_confirmation: bool = False
+
+    def __post_init__(self) -> None:
+        """Fail closed: every non-read action always needs two authorizations."""
+
+        if self.kind not in READ_ONLY_ACTION_KINDS:
+            self.requires_confirmation = True
 
 
 @dataclass(slots=True)
