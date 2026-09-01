@@ -1,7 +1,8 @@
+import socket
 from pathlib import Path
 
 from jarvis_papa.config import settings
-from jarvis_papa.voice.providers import VoiceArtifact
+from jarvis_papa.voice.providers import Qwen3TTSProvider, VoiceArtifact
 from jarvis_papa.voice.service import VoicePlaybackBus, VoiceProvider, VoiceService
 
 
@@ -71,3 +72,16 @@ def test_voice_playback_bus_returns_only_new_events() -> None:
 def test_duration_is_short_and_readable() -> None:
     duration = VoiceService._estimate_duration("Robert, j'ai reçu un mail important de l'assurance.")
     assert 1.6 <= duration <= 10.0
+
+
+def test_qwen_worker_chooses_another_local_port_when_preferred_is_busy(monkeypatch) -> None:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as occupied:
+        occupied.bind(("127.0.0.1", 0))
+        preferred = int(occupied.getsockname()[1])
+        occupied.listen(1)
+        monkeypatch.setattr(settings, "qwen3_tts_worker_port", preferred)
+        provider = Qwen3TTSProvider()
+        selected = provider._choose_worker_port()
+
+    assert selected != preferred
+    assert 1 <= selected <= 65535
