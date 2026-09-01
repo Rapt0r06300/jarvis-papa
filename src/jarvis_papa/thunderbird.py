@@ -34,22 +34,26 @@ class ThunderbirdBridgeState:
         self._lock = Lock()
         self._last_seen: float | None = None
         self._source = ""
+        self._pid: int | None = None
 
-    def mark_seen(self, source: str = "native_host") -> None:
+    def mark_seen(self, source: str = "native_host", pid: int | None = None) -> None:
         with self._lock:
             self._last_seen = time.time()
             self._source = source[:80]
+            self._pid = pid if isinstance(pid, int) and pid > 0 else None
 
     def snapshot(self, *, timeout_seconds: float = 12.0) -> dict[str, object]:
         with self._lock:
             last_seen = self._last_seen
             source = self._source
+            pid = self._pid
         if last_seen is None:
             return {
                 "connected": False,
                 "last_seen": None,
                 "age_seconds": None,
                 "source": source,
+                "pid": pid,
             }
         age = max(0.0, time.time() - last_seen)
         return {
@@ -57,6 +61,7 @@ class ThunderbirdBridgeState:
             "last_seen": last_seen,
             "age_seconds": round(age, 2),
             "source": source,
+            "pid": pid,
         }
 
 
