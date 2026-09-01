@@ -15,10 +15,11 @@ def test_document_request_becomes_high_priority_action() -> None:
 
     assert assessment.importance is SpeechImportance.HIGH
     assert assessment.action_required is True
+    assert assessment.category == "important"
     assert "facture" in assessment.search_terms
 
 
-def test_newsletter_is_noise_and_does_not_create_card() -> None:
+def test_newsletter_is_silent_and_kept_for_sorting() -> None:
     mail = IncomingMail(
         message_id=43,
         header_message_id="newsletter@example.test",
@@ -31,5 +32,9 @@ def test_newsletter_is_noise_and_does_not_create_card() -> None:
     card = mail_assistant.create_action_card(mail, assessment)
 
     assert assessment.is_noise is True
+    assert assessment.category == "newsletter"
     assert assessment.importance is SpeechImportance.LOW
-    assert card is None
+    assert card is not None
+    assert card.speech_text is None
+    assert card.options == []
+    assert card.metadata["category"] == "newsletter"
