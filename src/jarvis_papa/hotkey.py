@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import threading
 from collections.abc import Callable
+from contextlib import suppress
 
 
 class GlobalHotkeyService:
@@ -59,10 +60,8 @@ class GlobalHotkeyService:
                     if message.message == self.WM_HOTKEY and int(message.wParam) == self.HOTKEY_ID:
                         callback_fn = self._callback
                         if callback_fn is not None:
-                            try:
+                            with suppress(RuntimeError, OSError, ValueError):
                                 callback_fn()
-                            except Exception:
-                                continue
             finally:
                 user32.UnregisterHotKey(None, self.HOTKEY_ID)
                 self._registered = False
