@@ -22,7 +22,7 @@ def _prepare_windowed_runtime() -> None:
 
 _prepare_windowed_runtime()
 
-from jarvis_papa.desktop_app import run  # noqa: E402
+from jarvis_papa.desktop_app import run
 
 
 if __name__ == "__main__":
