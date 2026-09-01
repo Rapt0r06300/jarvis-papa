@@ -3,22 +3,30 @@ const COMPLETED_KEY = "jarvisCompletedCommands";
 
 let nativePort = null;
 let reconnectTimer = null;
-let completedCommands = new Set();
+let completedCommands = new Map();
 
 async function loadCompletedCommands() {
   try {
     const stored = await messenger.storage.local.get(COMPLETED_KEY);
     const values = stored && stored[COMPLETED_KEY];
-    if (Array.isArray(values)) completedCommands = new Set(values.filter(value => typeof value === "string"));
+    if (!Array.isArray(values)) return;
+    const entries = [];
+    for (const value of values) {
+      if (typeof value === "string") entries.push([value, {verified: false}]);
+      else if (value && typeof value === "object" && typeof value.id === "string") {
+        entries.push([value.id, value.result && typeof value.result === "object" ? value.result : {}]);
+      }
+    }
+    completedCommands = new Map(entries.slice(-120));
   } catch (error) {
     console.error("Jarvis could not load command history", error);
   }
 }
 
-async function rememberCompletedCommand(commandId) {
-  completedCommands.add(commandId);
-  const values = Array.from(completedCommands).slice(-120);
-  completedCommands = new Set(values);
+async function rememberCompletedCommand(commandId, result = {}) {
+  completedCommands.set(commandId, result);
+  const values = Array.from(completedCommands.entries()).slice(-120).map(([id, storedResult]) => ({id, result: storedResult}));
+  completedCommands = new Map(values.map(item => [item.id, item.result]));
   try {
     await messenger.storage.local.set({[COMPLETED_KEY]: values});
   } catch (error) {
@@ -160,22 +168,94 @@ async function sortNewsletters(items) {
   }
 }
 
+function recipientText(value) {
+  if (typeof value === "string") return value.trim();
+  if (!value || typeof value !== "object") return String(value || "").trim();
+  return String(value.email || value.address || value.name || "").trim();
+}
+
+function recipientList(values) {
+  return (Array.isArray(values) ? values : []).map(recipientText).filter(Boolean);
+}
+
+async function sha256Hex(text) {
+  const data = new TextEncoder().encode(text);
+  const digest = await crypto.subtle.digest("SHA-256", data);
+  return Array.from(new Uint8Array(digest)).map(byte => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function composeSnapshot(tabId) {
+  const details = await messenger.compose.getComposeDetails(tabId);
+  const attachments = await messenger.compose.listAttachments(tabId);
+  const to = recipientList(details.to);
+  const cc = recipientList(details.cc);
+  const bcc = recipientList(details.bcc);
+  const snapshot = {
+    to,
+    cc,
+    bcc,
+    subject: String(details.subject || ""),
+    body: details.isPlainText ? String(details.plainTextBody || "") : String(details.body || ""),
+    is_plain_text: Boolean(details.isPlainText),
+    attachments: (attachments || []).map(item => ({
+      name: String(item.name || ""),
+      size: Number(item.size || 0)
+    })).sort((left, right) => `${left.name}:${left.size}`.localeCompare(`${right.name}:${right.size}`))
+  };
+  const composeDigest = await sha256Hex(JSON.stringify(snapshot));
+  return {
+    snapshot,
+    result: {
+      compose_tab_id: tabId,
+      compose_digest: composeDigest,
+      recipient_display: to.join(", ") || cc.join(", ") || "destinataire du brouillon",
+      subject: snapshot.subject,
+      attachment_names: snapshot.attachments.map(item => item.name).filter(Boolean),
+      verified: true
+    }
+  };
+}
+
 async function handleCommand(command) {
   const payload = command.payload || {};
   if (command.kind === "open_message") {
     if (payload.header_message_id) await messenger.messageDisplay.open({headerMessageId: payload.header_message_id});
     else await messenger.messageDisplay.open({messageId: await resolveMessageId(payload)});
-    return;
+    return {verified: true};
   }
   if (command.kind === "prepare_reply") {
     const messageId = await resolveMessageId(payload);
     const tab = await messenger.compose.beginReply(messageId, "replyToSender", {plainTextBody: payload.body || ""});
     await addLocalAttachments(tab.id, payload.attachments || []);
-    return;
+    return {compose_tab_id: tab.id, verified: true};
+  }
+  if (command.kind === "inspect_compose") {
+    const tabId = Number(payload.compose_tab_id || 0);
+    if (!Number.isInteger(tabId) || tabId <= 0) throw new Error("Brouillon Thunderbird introuvable");
+    return (await composeSnapshot(tabId)).result;
+  }
+  if (command.kind === "send_reply") {
+    const tabId = Number(payload.compose_tab_id || 0);
+    const expectedDigest = String(payload.expected_compose_digest || "");
+    if (!Number.isInteger(tabId) || tabId <= 0 || !expectedDigest) throw new Error("Preuve d'envoi Jarvis incomplète");
+    const current = await composeSnapshot(tabId);
+    if (current.result.compose_digest !== expectedDigest) {
+      throw new Error("Le brouillon a changé depuis les autorisations. Jarvis refuse l'envoi : vérifie puis confirme à nouveau.");
+    }
+    const sent = await messenger.compose.sendMessage(tabId, {mode: "sendNow"});
+    const verified = sent && sent.mode === "sendNow" && Boolean(sent.headerMessageId);
+    if (!verified) throw new Error("Thunderbird n'a pas confirmé l'envoi immédiat du mail");
+    return {
+      mode: sent.mode,
+      header_message_id: sent.headerMessageId,
+      sent_copy_count: Array.isArray(sent.messages) ? sent.messages.length : 0,
+      compose_tab_id: tabId,
+      verified: true
+    };
   }
   if (command.kind === "sort_newsletters") {
     await sortNewsletters(payload.items || []);
-    return;
+    return {verified: true};
   }
   throw new Error(`Commande Jarvis inconnue: ${command.kind}`);
 }
@@ -184,21 +264,23 @@ async function handleNativeMessage(message) {
   if (!message || message.type !== "command" || !message.command) return;
   const command = message.command;
   if (completedCommands.has(command.id)) {
-    if (nativePort) nativePort.postMessage({type: "command_ack", command_id: command.id, ok: true, duplicate: true, error: null});
+    const result = {...(completedCommands.get(command.id) || {}), duplicate: true};
+    if (nativePort) nativePort.postMessage({type: "command_ack", command_id: command.id, ok: true, result, error: null});
     return;
   }
 
   let ok = true;
   let error = null;
+  let result = {};
   try {
-    await handleCommand(command);
-    await rememberCompletedCommand(command.id);
+    result = await handleCommand(command) || {};
+    await rememberCompletedCommand(command.id, result);
   } catch (cause) {
     ok = false;
     error = String(cause).slice(0, 1200);
     console.error("Jarvis Thunderbird command failed", cause);
   }
-  if (nativePort) nativePort.postMessage({type: "command_ack", command_id: command.id, ok, error});
+  if (nativePort) nativePort.postMessage({type: "command_ack", command_id: command.id, ok, result, error});
 }
 
 loadCompletedCommands().finally(connectNativeHost);
