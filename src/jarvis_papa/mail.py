@@ -20,7 +20,9 @@ class MailAssessment:
     importance: SpeechImportance
     action_required: bool
     is_noise: bool
+    category: str
     summary: str
+    spoken_summary: str
     search_terms: tuple[str, ...]
 
 
@@ -32,6 +34,8 @@ class MailAssistant:
         "promotion",
         "soldes",
         "offre commerciale",
+        "nos offres",
+        "voir dans le navigateur",
     )
     _action_terms = (
         "merci de",
@@ -57,6 +61,8 @@ class MailAssistant:
         "échéance",
         "relance",
         "contrat",
+        "administration",
+        "remboursement",
     )
     _file_terms = (
         "facture",
@@ -75,29 +81,48 @@ class MailAssistant:
         combined = f"{mail.subject}\n{mail.body}".lower()
         is_noise = any(term in combined for term in self._noise_terms)
         action_required = any(term in combined for term in self._action_terms)
+        has_important_term = any(term in combined for term in self._important_terms)
 
-        if is_noise:
+        if is_noise and not action_required and not has_important_term:
             importance = SpeechImportance.LOW
+            category = "newsletter"
         elif "urgent" in combined or "au plus tard" in combined:
             importance = SpeechImportance.CRITICAL if action_required else SpeechImportance.HIGH
-        elif action_required or any(term in combined for term in self._important_terms):
+            category = "important"
+        elif action_required or has_important_term:
             importance = SpeechImportance.HIGH
+            category = "important"
         else:
             importance = SpeechImportance.NORMAL
+            category = "normal"
 
         summary = self._summarize(mail)
-        search_terms = self._extract_search_terms(combined)
         return MailAssessment(
             importance=importance,
             action_required=action_required,
-            is_noise=is_noise,
+            is_noise=category == "newsletter",
+            category=category,
             summary=summary,
-            search_terms=search_terms,
+            spoken_summary=self._spoken_summary(mail),
+            search_terms=self._extract_search_terms(combined),
         )
 
     def create_action_card(self, mail: IncomingMail, assessment: MailAssessment):
-        if assessment.is_noise:
-            return None
+        if assessment.category == "newsletter":
+            return action_queue.create(
+                title=mail.subject or "Newsletter",
+                summary=assessment.summary,
+                source=mail.author or "Newsletter",
+                importance=SpeechImportance.LOW.value,
+                speech_text=None,
+                options=[],
+                metadata={
+                    "category": "newsletter",
+                    "message_id": mail.message_id,
+                    "header_message_id": mail.header_message_id,
+                    "folder": mail.folder,
+                },
+            )
 
         options = [
             ActionOption(
@@ -135,16 +160,14 @@ class MailAssistant:
                         "author": mail.author,
                         "draft_only": True,
                     },
-                    requires_confirmation=False,
+                    requires_confirmation=True,
                 ),
             )
 
         speech_text = None
-        if assessment.importance in {SpeechImportance.HIGH, SpeechImportance.CRITICAL}:
-            speech_text = (
-                f"Robert, tu as reçu un message important de {self._spoken_sender(mail.author)}. "
-                f"{assessment.summary}"
-            )
+        if assessment.category == "important":
+            sender = self._spoken_sender(mail.author)
+            speech_text = f"Robert, mail important de {sender}. {assessment.spoken_summary}"
 
         return action_queue.create(
             title=mail.subject or "Nouveau message",
@@ -154,6 +177,7 @@ class MailAssistant:
             speech_text=speech_text,
             options=options,
             metadata={
+                "category": assessment.category,
                 "message_id": mail.message_id,
                 "header_message_id": mail.header_message_id,
                 "folder": mail.folder,
@@ -166,13 +190,26 @@ class MailAssistant:
         )
 
     @staticmethod
-    def _summarize(mail: IncomingMail) -> str:
-        text = re.sub(r"\s+", " ", mail.body).strip()
+    def _clean_body(body: str) -> str:
+        return re.sub(r"\s+", " ", body).strip()
+
+    def _summarize(self, mail: IncomingMail) -> str:
+        text = self._clean_body(mail.body)
         if not text:
             return f"Objet : {mail.subject}" if mail.subject else "Nouveau message reçu."
         if len(text) <= 220:
             return text
         return text[:217].rstrip() + "..."
+
+    def _spoken_summary(self, mail: IncomingMail) -> str:
+        text = self._clean_body(mail.body)
+        if not text:
+            return f"Objet : {mail.subject}." if mail.subject else "Le message ne contient pas de texte."
+        first_sentence = re.split(r"(?<=[.!?])\s+", text, maxsplit=1)[0].strip()
+        summary = first_sentence or text
+        if len(summary) > 150:
+            summary = summary[:147].rstrip() + "..."
+        return summary
 
     def _extract_search_terms(self, text: str) -> tuple[str, ...]:
         found = [term for term in self._file_terms if term in text]
