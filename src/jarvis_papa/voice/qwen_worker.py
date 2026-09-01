@@ -91,14 +91,14 @@ class QwenHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(encoded)
 
-    def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+    def do_GET(self) -> None:
         if self.path != "/health" or not self._authorized():
             self._reply(403, {"ok": False})
             return
         self.server.last_activity = time.monotonic()
         self._reply(200, {"ok": True, "model": self.server.model_name})
 
-    def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+    def do_POST(self) -> None:
         if self.path != "/synthesize" or not self._authorized():
             self._reply(403, {"ok": False})
             return
