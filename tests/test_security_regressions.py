@@ -3,6 +3,7 @@ from fastapi.testclient import TestClient
 import jarvis_papa.routes as routes_module
 from jarvis_papa.actions import ActionKind, ActionOption
 from jarvis_papa.app import app
+from jarvis_papa.conversation import conversation_manager
 from jarvis_papa.dashboard_secure import dashboard_html
 from jarvis_papa.thunderbird import ThunderbirdCommandQueue
 
@@ -76,3 +77,51 @@ def test_legacy_dashboard_uses_exact_bindings_and_verified_send() -> None:
     assert "/send/plan/" in html
     assert "proof.verified !== true" in html
     assert "proof.mode !== 'sendNow'" in html
+
+
+def test_conversation_reset_requires_exact_two_step_grant(monkeypatch) -> None:
+    monkeypatch.delenv("JARVIS_LOCAL_API_TOKEN", raising=False)
+    deleted: list[str] = []
+    monkeypatch.setattr(
+        conversation_manager,
+        "reset",
+        lambda conversation_id: deleted.append(conversation_id) or True,
+    )
+    conversation_id = "conversation-security-01"
+
+    plan = client.get(f"/api/conversation/{conversation_id}/reset-plan")
+    assert plan.status_code == 200
+    plan_body = plan.json()
+    assert plan_body["action_key"] == "conversation.reset"
+    assert plan_body["binding"] == {"conversation_id": conversation_id}
+
+    blocked = client.request(
+        "DELETE",
+        f"/api/conversation/{conversation_id}",
+        json={"authorization_token": ""},
+    )
+    assert blocked.status_code == 200
+    assert blocked.json()["ok"] is False
+    assert deleted == []
+
+    started = client.post(
+        "/api/confirmations/start",
+        json={
+            "action_key": plan_body["action_key"],
+            "description": plan_body["description"],
+            "binding": plan_body["binding"],
+        },
+    ).json()
+    first = client.post(f"/api/confirmations/{started['challenge_id']}/confirm").json()
+    second = client.post(f"/api/confirmations/{started['challenge_id']}/confirm").json()
+    assert first["ok"] is True
+    assert second["completed"] is True
+
+    allowed = client.request(
+        "DELETE",
+        f"/api/conversation/{conversation_id}",
+        json={"authorization_token": second["authorization_token"]},
+    )
+    assert allowed.status_code == 200
+    assert allowed.json()["ok"] is True
+    assert deleted == [conversation_id]
