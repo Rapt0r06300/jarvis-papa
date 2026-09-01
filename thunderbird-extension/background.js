@@ -105,6 +105,45 @@ async function addLocalAttachments(tabId, attachments) {
   }
 }
 
+async function getOrCreateNewslettersFolder(accountId) {
+  const existing = await messenger.folders.query({
+    accountId,
+    name: "Newsletters"
+  });
+  if (existing.length) {
+    return existing[0];
+  }
+
+  const account = await messenger.accounts.get(accountId);
+  if (!account || !account.rootFolder) {
+    throw new Error("Compte Thunderbird introuvable pour ranger les newsletters");
+  }
+  return messenger.folders.create(account.rootFolder.id, "Newsletters");
+}
+
+async function sortNewsletters(items) {
+  const grouped = new Map();
+
+  for (const item of items || []) {
+    const messageId = await resolveMessageId(item);
+    const message = await messenger.messages.get(messageId);
+    const accountId = message.folder && message.folder.accountId;
+    if (!accountId) {
+      continue;
+    }
+    if (!grouped.has(accountId)) {
+      grouped.set(accountId, []);
+    }
+    grouped.get(accountId).push(messageId);
+  }
+
+  for (const [accountId, messageIds] of grouped.entries()) {
+    if (!messageIds.length) continue;
+    const folder = await getOrCreateNewslettersFolder(accountId);
+    await messenger.messages.move(messageIds, folder.id, {isUserAction: true});
+  }
+}
+
 async function handleCommand(command) {
   const payload = command.payload || {};
 
@@ -124,6 +163,11 @@ async function handleCommand(command) {
       plainTextBody: payload.body || ""
     });
     await addLocalAttachments(tab.id, payload.attachments || []);
+    return;
+  }
+
+  if (command.kind === "sort_newsletters") {
+    await sortNewsletters(payload.items || []);
     return;
   }
 
