@@ -57,6 +57,10 @@ class OllamaAI:
             "model_installed": settings.ollama_model in models,
         }
 
+    def ready(self) -> bool:
+        state = self.status()
+        return bool(state.get("available")) and state.get("model_installed") is not False
+
     def chat(
         self,
         messages: list[dict[str, Any]],
@@ -113,7 +117,7 @@ class OllamaAI:
             + (" Vous trouverez le document demandé en pièce jointe." if attachment_names else "")
             + "\n\nCordialement,\nRobert"
         )
-        if not self.enabled:
+        if not self.enabled or not self.ready():
             return DraftReply(fallback, False)
 
         schema = {
