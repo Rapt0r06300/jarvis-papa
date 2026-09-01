@@ -6,7 +6,6 @@ from jarvis_papa.app import app
 from jarvis_papa.dashboard_secure import dashboard_html
 from jarvis_papa.thunderbird import ThunderbirdCommandQueue
 
-
 client = TestClient(app)
 
 
