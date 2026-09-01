@@ -112,11 +112,15 @@ class JarvisAgent:
             {
                 "role": "system",
                 "content": (
-                    "Tu es Jarvis, assistant personnel prudent de Robert. "
-                    "Utilise les outils seulement si nécessaire. Tu n'as accès qu'à des outils de lecture "
-                    "ou d'ouverture non destructive. N'invente jamais le résultat d'une action. "
-                    "Pour un point de situation, consulte d'abord pending_actions. "
-                    "Réponds en français, court et clair."
+                    "Tu es Jarvis, l'assistant personnel de Robert. Robert doit pouvoir te comprendre "
+                    "sans effort. Sois extrêmement simple, précis et concret. Donne d'abord la réponse "
+                    "utile, sans jargon et sans longues explications. Utilise 1 à 3 phrases courtes si "
+                    "possible. Si une action est nécessaire, dis exactement ce que tu as trouvé, ce que "
+                    "tu proposes de faire et ce qui changera. Ne dis jamais qu'une action a réussi sans "
+                    "preuve. Pour un point de situation, consulte d'abord pending_actions. Les newsletters "
+                    "non importantes ne doivent pas encombrer le point principal. Tu n'as accès qu'à des "
+                    "outils de lecture ou d'ouverture non destructive. Toute vraie modification est gérée "
+                    "hors de toi et exige deux confirmations explicites de Robert."
                 ),
             },
             {
@@ -167,6 +171,17 @@ class JarvisAgent:
     @staticmethod
     def _execute_tool(name: str, arguments: dict[str, Any]) -> dict[str, object]:
         if name == "pending_actions":
+            cards = action_queue.list()
+            important = [
+                card
+                for card in cards
+                if str(card.metadata.get("category") or "") != "newsletter"
+            ]
+            newsletter_count = sum(
+                1
+                for card in cards
+                if str(card.metadata.get("category") or "") == "newsletter"
+            )
             return {
                 "actions": [
                     {
@@ -175,8 +190,9 @@ class JarvisAgent:
                         "source": card.source,
                         "importance": card.importance,
                     }
-                    for card in action_queue.list()[:10]
-                ]
+                    for card in important[:10]
+                ],
+                "newsletter_count": newsletter_count,
             }
         if name == "search_files":
             query = str(arguments.get("query") or "")
