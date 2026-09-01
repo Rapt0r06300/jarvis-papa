@@ -7,10 +7,18 @@ from jarvis_papa.app import app
 client = TestClient(app)
 
 
-def authorization_token(action_key: str, description: str = "Action de test") -> str:
+def authorization_token(
+    action_key: str,
+    description: str = "Action de test",
+    binding: dict[str, object] | None = None,
+) -> str:
     started = client.post(
         "/api/confirmations/start",
-        json={"action_key": action_key, "description": description},
+        json={
+            "action_key": action_key,
+            "description": description,
+            "binding": binding or {},
+        },
     )
     assert started.status_code == 200
     challenge_id = started.json()["challenge_id"]
@@ -54,7 +62,7 @@ def test_status_reports_hardened_secretary_modules() -> None:
     response = client.get("/api/status")
     assert response.status_code == 200
     payload = response.json()
-    assert payload["security"] == "server_enforced_two_step_one_time_grants"
+    assert payload["security"] == "server_enforced_two_step_exact_one_time_grants"
     assert payload["modules"]["mail"] == "professional_triage_deadlines_and_newsletters"
     assert payload["modules"]["voice_output"] == "privacy_aware_french_voice"
     assert payload["modules"]["tasks"] == "persistent_prioritized_snooze_ready"
@@ -129,17 +137,13 @@ def test_two_distinct_server_confirmation_steps_are_required() -> None:
     assert third["ok"] is False
 
 
-def test_authorization_token_is_bound_to_action_and_one_use_only() -> None:
-    token = authorization_token("memory.remember")
+def test_authorization_token_is_bound_to_exact_parameters_and_one_use_only() -> None:
     key = f"test-{uuid4().hex}"
+    binding = {"category": "test", "key": key, "value": "réponses courtes"}
+    token = authorization_token("memory.remember", binding=binding)
     saved = client.post(
         "/api/memory/remember",
-        json={
-            "category": "test",
-            "key": key,
-            "value": "réponses courtes",
-            "authorization_token": token,
-        },
+        json={**binding, "authorization_token": token},
     )
     assert saved.status_code == 200
     assert saved.json()["ok"] is True
@@ -155,6 +159,23 @@ def test_authorization_token_is_bound_to_action_and_one_use_only() -> None:
     )
     assert reused.status_code == 200
     assert reused.json()["ok"] is False
+
+
+def test_authorization_token_cannot_be_retargeted_to_different_parameters() -> None:
+    key = f"bound-{uuid4().hex}"
+    approved = {"category": "test", "key": key, "value": "valeur approuvée"}
+    token = authorization_token("memory.remember", binding=approved)
+    changed = client.post(
+        "/api/memory/remember",
+        json={
+            "category": "test",
+            "key": key,
+            "value": "valeur différente",
+            "authorization_token": token,
+        },
+    )
+    assert changed.status_code == 200
+    assert changed.json()["ok"] is False
 
 
 def test_wrong_action_cannot_consume_authorization_token() -> None:
@@ -276,7 +297,7 @@ def test_old_confirmations_field_cannot_sort_newsletters() -> None:
         assert response.json()["confirmations_remaining"] == 2
 
 
-def test_open_email_action_is_read_only() -> None:
+def test_open_email_action_is_read_only_but_reports_pending_verification() -> None:
     unique = uuid4().hex
     created = client.post(
         "/api/mail/incoming",
@@ -295,6 +316,7 @@ def test_open_email_action_is_read_only() -> None:
     )
     assert executed.status_code == 200
     assert executed.json()["ok"] is True
+    assert executed.json()["state"] == "partial"
     commands = client.get("/api/thunderbird/commands").json()
     assert any(command["kind"] == "open_message" for command in commands)
 
@@ -331,27 +353,22 @@ def test_browser_agent_blocks_loopback_urls() -> None:
 
 def test_memory_write_succeeds_only_with_real_one_time_grant() -> None:
     key = f"assurance-{uuid4().hex}"
+    binding = {
+        "category": "preference-test",
+        "key": key,
+        "value": "réponses courtes",
+    }
     blocked = client.post(
         "/api/memory/remember",
-        json={
-            "category": "preference-test",
-            "key": key,
-            "value": "réponses courtes",
-            "confirmations": 2,
-        },
+        json={**binding, "confirmations": 2},
     )
     assert blocked.status_code == 200
     assert blocked.json()["ok"] is False
 
-    token = authorization_token("memory.remember")
+    token = authorization_token("memory.remember", binding=binding)
     saved = client.post(
         "/api/memory/remember",
-        json={
-            "category": "preference-test",
-            "key": key,
-            "value": "réponses courtes",
-            "authorization_token": token,
-        },
+        json={**binding, "authorization_token": token},
     )
     assert saved.status_code == 200
     assert saved.json()["ok"] is True
