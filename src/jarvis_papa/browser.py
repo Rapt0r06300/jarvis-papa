@@ -1,6 +1,7 @@
 import importlib.util
 import ipaddress
 import socket
+import sys
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -86,6 +87,19 @@ class BrowserAgent:
             return
         route.continue_()
 
+    @staticmethod
+    def _launch_browser(playwright):
+        """Prefer Windows' installed Edge so the EXE does not need a separate Chromium install."""
+
+        from playwright.sync_api import Error as PlaywrightError
+
+        if sys.platform == "win32":
+            try:
+                return playwright.chromium.launch(channel="msedge", headless=True)
+            except PlaywrightError:
+                pass
+        return playwright.chromium.launch(headless=True)
+
     def read_url(self, raw_url: str) -> BrowserResult:
         try:
             url = self._validate_public_url(raw_url)
@@ -99,7 +113,7 @@ class BrowserAgent:
             from playwright.sync_api import sync_playwright
 
             with sync_playwright() as playwright:
-                browser = playwright.chromium.launch(headless=True)
+                browser = self._launch_browser(playwright)
                 context = browser.new_context()
                 context.route("**/*", self._route_request)
                 page = context.new_page()
@@ -148,7 +162,7 @@ class BrowserAgent:
             from playwright.sync_api import sync_playwright
 
             with sync_playwright() as playwright:
-                browser = playwright.chromium.launch(headless=True)
+                browser = self._launch_browser(playwright)
                 context = browser.new_context(accept_downloads=True)
                 context.route("**/*", self._route_request)
                 page = context.new_page()
