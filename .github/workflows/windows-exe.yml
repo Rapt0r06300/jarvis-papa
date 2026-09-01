@@ -18,7 +18,7 @@ permissions:
 jobs:
   build-windows-exe:
     runs-on: windows-latest
-    timeout-minutes: 35
+    timeout-minutes: 40
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -110,6 +110,45 @@ jobs:
           $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
           if (-not (Test-Path $iscc)) { throw "Inno Setup compiler not found" }
           & $iscc "packaging\JarvisPapa.iss"
+
+      - name: Smoke test installer, installed EXE and uninstaller
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          $setup = (Resolve-Path "installer-output\JarvisPapa-Setup.exe").Path
+          $installDir = Join-Path $env:RUNNER_TEMP "JarvisPapaInstalled"
+          Remove-Item $installDir -Recurse -Force -ErrorAction SilentlyContinue
+          $installer = Start-Process -FilePath $setup -ArgumentList @(
+            "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/DIR=$installDir"
+          ) -Wait -PassThru
+          if ($installer.ExitCode -ne 0) { throw "Installer failed with code $($installer.ExitCode)" }
+          $installedExe = Join-Path $installDir "Jarvis.exe"
+          if (-not (Test-Path $installedExe)) { throw "Installed Jarvis.exe is missing" }
+
+          $process = Start-Process -FilePath $installedExe -WorkingDirectory $installDir -PassThru
+          $healthy = $false
+          try {
+            for ($i = 0; $i -lt 60; $i++) {
+              if ($process.HasExited) { throw "Installed Jarvis.exe exited unexpectedly" }
+              try {
+                $health = Invoke-RestMethod -Uri "http://127.0.0.1:8765/health" -TimeoutSec 1
+                if ($health.status -eq "ok") { $healthy = $true; break }
+              } catch {
+                Start-Sleep -Milliseconds 500
+              }
+            }
+            if (-not $healthy) { throw "Installed Jarvis.exe never became healthy" }
+          } finally {
+            if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force }
+          }
+
+          $uninstaller = Join-Path $installDir "unins000.exe"
+          if (-not (Test-Path $uninstaller)) { throw "Jarvis uninstaller is missing" }
+          $uninstall = Start-Process -FilePath $uninstaller -ArgumentList @(
+            "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"
+          ) -Wait -PassThru
+          if ($uninstall.ExitCode -ne 0) { throw "Uninstaller failed with code $($uninstall.ExitCode)" }
 
       - name: Verify Windows deliverables
         shell: pwsh
