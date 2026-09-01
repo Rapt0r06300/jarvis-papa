@@ -335,7 +335,12 @@ class MailAssistant:
             return (sum(1 for term in terms if term in lowered), -len(sentence))
 
         best = max(sentences[:12], key=score)
-        best = re.sub(r"^(bonjour|bonsoir)(\s+[^,.]{0,60})?[,!]?\s*", "", best, flags=re.I)
+        best = re.sub(
+            r"^(bonjour|bonsoir)(\s+[^,.]{0,60})?[,!]?\s*",
+            "",
+            best,
+            flags=re.IGNORECASE,
+        )
         return best[:400].strip() or sentences[0]
 
     @staticmethod
@@ -346,7 +351,7 @@ class MailAssistant:
             r"(?:avant|au plus tard|d'ici|pour)\s+(lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche)",
         )
         for pattern in patterns:
-            match = re.search(pattern, text, flags=re.I)
+            match = re.search(pattern, text, flags=re.IGNORECASE)
             if match:
                 return match.group(1).strip()
         return None
@@ -355,7 +360,10 @@ class MailAssistant:
         combined = f"{subject} {body}".casefold()
         found = [term for term in self._file_terms if term in combined]
         # Identifiers, amounts and distinctive long words make local file search much more useful.
-        candidates = re.findall(r"\b(?:[A-Z0-9][A-Z0-9._/-]{3,}|\d+[.,]?\d*\s?€)\b", f"{subject} {body}")
+        candidates = re.findall(
+            r"\b(?:[A-Z0-9][A-Z0-9._/-]{3,}|\d+[.,]?\d*\s?€)\b",
+            f"{subject} {body}",
+        )
         for item in candidates:
             normalized = item.strip().casefold()
             if normalized and normalized not in found:
