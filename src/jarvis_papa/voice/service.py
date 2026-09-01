@@ -11,6 +11,7 @@ from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Condition, Lock, Thread
+from typing import ClassVar
 
 import httpx
 
@@ -150,7 +151,12 @@ class WindowsAudioPlayer:
 
 
 class VoiceService:
-    _PRIORITIES = {"critical": 0, "high": 1, "normal": 2, "low": 3}
+    _PRIORITIES: ClassVar[dict[str, int]] = {
+        "critical": 0,
+        "high": 1,
+        "normal": 2,
+        "low": 3,
+    }
 
     def __init__(self, providers: dict[str, VoiceProvider] | None = None) -> None:
         self.providers = providers or {
