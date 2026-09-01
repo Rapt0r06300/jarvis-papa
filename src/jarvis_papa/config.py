@@ -14,6 +14,13 @@ class Settings(BaseSettings):
     runtime_dir: Path = Path("./runtime")
     speech_enabled: bool = True
     speech_repeat_cooldown_seconds: int = 300
+    file_search_timeout_seconds: float = 3.0
+    file_search_roots: tuple[Path, ...] = (
+        Path.home() / "Documents",
+        Path.home() / "Desktop",
+        Path.home() / "Downloads",
+    )
+    thunderbird_native_host_name: str = "fr.jarvis_papa.host"
 
     model_config = SettingsConfigDict(
         env_file=".env",
