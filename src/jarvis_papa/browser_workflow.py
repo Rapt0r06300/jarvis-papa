@@ -144,7 +144,7 @@ class BrowserWorkflow:
         try:
             url = self._guard._validate_public_url(raw_url)
             clean_steps = self._validate_steps(steps)
-        except ValueError as exc:
+        except (TypeError, ValueError) as exc:
             return {"ok": False, "state": "failed", "detail": str(exc)}
         if not self._guard.available:
             return {"ok": False, "state": "failed", "detail": "Playwright n'est pas disponible."}
