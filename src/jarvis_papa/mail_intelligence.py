@@ -6,8 +6,10 @@ from dataclasses import replace
 
 from jarvis_papa.actions import action_queue
 from jarvis_papa.ai import AIUnavailable, local_ai
+from jarvis_papa.commitments import commitment_extractor
 from jarvis_papa.mail import IncomingMail, MailAssessment, MailAssistant
 from jarvis_papa.memory import memory_store
+from jarvis_papa.proactivity import AttentionLevel, proactive_events
 
 _ALLOWED_CATEGORIES = {"normal", "important", "suspicious", "newsletter"}
 _PROMPT_MARKERS = (
@@ -23,12 +25,7 @@ _PROMPT_MARKERS = (
 
 
 class IntelligentMailAssistant(MailAssistant):
-    """Conservative semantic layer over the deterministic mail triage.
-
-    The deterministic assessment remains the safety floor. The local model may
-    clarify, raise priority and improve the summary, but it is never allowed to
-    silently downgrade a suspicious/important message to noise.
-    """
+    """Conservative semantic layer over deterministic triage."""
 
     def assess(self, mail: IncomingMail) -> MailAssessment:
         baseline = super().assess(mail)
@@ -114,28 +111,60 @@ class IntelligentMailAssistant(MailAssistant):
             return baseline
         return self._merge(baseline, semantic)
 
+    def create_action_card(self, mail: IncomingMail, assessment: MailAssessment):
+        card = super().create_action_card(mail, assessment)
+        if card is None:
+            return None
+        commitments = commitment_extractor.detect(
+            mail.body,
+            source_hint=f"mail:{mail.header_message_id or mail.message_id or 'unknown'}",
+        )
+        if commitments:
+            card.metadata["commitments"] = [item.to_dict() for item in commitments]
+            action_queue.add(card)
+        if assessment.category in {"important", "suspicious"}:
+            level = (
+                AttentionLevel.URGENT
+                if assessment.priority_score >= 90
+                else AttentionLevel.IMPORTANT
+            )
+            proactive_events.publish(
+                kind="important_mail",
+                level=level,
+                title=mail.subject or "Mail important",
+                detail=assessment.spoken_summary,
+                source="thunderbird",
+            )
+        return card
+
     def _merge(self, baseline: MailAssessment, semantic: dict[str, object]) -> MailAssessment:
         category = str(semantic.get("category") or baseline.category).casefold()
         if category not in _ALLOWED_CATEGORIES:
             category = baseline.category
         semantic_conf = self._float(semantic.get("confidence"), baseline.confidence, 0.0, 1.0)
-        semantic_priority = int(self._float(semantic.get("priority_score"), baseline.priority_score, 0, 100))
+        semantic_priority = int(
+            self._float(semantic.get("priority_score"), baseline.priority_score, 0, 100)
+        )
         semantic_action = bool(semantic.get("action_required"))
         semantic_sensitive = bool(semantic.get("sensitive"))
 
-        # Safety floor: semantic reasoning may escalate but never silently hide a deterministic warning.
         if baseline.category == "suspicious":
             category = "suspicious"
         elif baseline.category == "important" and category in {"normal", "newsletter"}:
             category = "important"
         elif baseline.category == "newsletter" and category == "normal" and semantic_conf < 0.86:
             category = "newsletter"
-        elif category == "newsletter" and (baseline.action_required or baseline.priority_score >= 60):
+        elif category == "newsletter" and (
+            baseline.action_required or baseline.priority_score >= 60
+        ):
             category = "important"
 
         action_required = baseline.action_required or semantic_action
         sensitive = baseline.sensitive or semantic_sensitive or category == "suspicious"
-        priority = max(baseline.priority_score, semantic_priority if category != "newsletter" else 0)
+        priority = max(
+            baseline.priority_score,
+            semantic_priority if category != "newsletter" else 0,
+        )
         if category == "suspicious":
             priority = max(priority, 80)
         elif category == "important":
@@ -186,6 +215,7 @@ class IntelligentMailAssistant(MailAssistant):
                         "summary": card.summary[:500],
                         "priority": card.priority_score,
                         "deadline": card.metadata.get("deadline_text"),
+                        "commitments": card.metadata.get("commitments", []),
                     }
                 )
             if len(matches) >= 4:
