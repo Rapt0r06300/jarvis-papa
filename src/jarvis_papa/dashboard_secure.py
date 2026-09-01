@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from jarvis_papa.dashboard import dashboard_html as _legacy_dashboard_html
 
-
 _SECURITY_PATCH = r"""
 <script>
 async function authorize(actionKey, actionText, binding = {}) {
