@@ -88,9 +88,10 @@ class JarvisAgent:
         "Réponds en français de France, normalement en 1 à 4 phrases courtes, naturelles et utiles. "
         "Explique simplement ce que tu sais, ce que tu cherches et ce que tu as réellement vérifié. "
         "N'invente jamais une information manquante. Si l'information est actuelle ou volatile, utilise les "
-        "sources Web fournies ou l'outil web_search. Une recherche ne signifie pas qu'une page a été lue : "
-        "utilise browser_read lorsqu'il faut confirmer le contenu d'une source. Pour les informations "
-        "officielles, privilégie une source officielle lorsqu'elle est disponible. "
+        "sources Web fournies ou l'outil web_search. SEARCH trouve des sources ; web_read lit une source par "
+        "HTTP ; browser_read est réservé aux pages qui nécessitent rendu ou interaction. Une recherche seule "
+        "ne signifie jamais qu'une page a été lue. Pour les informations officielles, privilégie une source "
+        "officielle lorsqu'elle est disponible et compare plusieurs sources si le sujet l'exige. "
         "Pour les mails et fichiers, conserve les références ordinales et identifiants fournis par les outils "
         "afin de comprendre des suites comme 'le deuxième', 'ouvre-le' ou 'résume-le'. "
         "Tu ne disposes que d'outils SAFE/LOW de lecture, recherche, inspection ou navigation locale. "
@@ -118,7 +119,12 @@ class JarvisAgent:
             return AgentResult(False, "Je n'ai pas compris la demande.", final_state="failed")
         route = route or IntentRouter.route(prompt)
         if is_cancelled and is_cancelled():
-            return AgentResult(False, "D'accord, j'ai arrêté cette demande.", route=route, final_state="cancelled")
+            return AgentResult(
+                False,
+                "D'accord, j'ai arrêté cette demande.",
+                route=route,
+                final_state="cancelled",
+            )
 
         observations: list[dict[str, object]] = []
         used: list[str] = []
@@ -215,7 +221,12 @@ class JarvisAgent:
                     if not isinstance(arguments, dict):
                         arguments = {}
                     fingerprint = hashlib.sha256(
-                        json.dumps([name, arguments], sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")
+                        json.dumps(
+                            [name, arguments],
+                            sort_keys=True,
+                            ensure_ascii=False,
+                            default=str,
+                        ).encode("utf-8")
                     ).hexdigest()
                     if fingerprint in call_fingerprints:
                         execution = ToolExecution(
@@ -246,7 +257,10 @@ class JarvisAgent:
                     messages.append(
                         {
                             "role": "system",
-                            "content": "Limite d'outils atteinte. Réponds maintenant avec les données déjà vérifiées, sans nouvel outil.",
+                            "content": (
+                                "Limite d'outils atteinte. Réponds maintenant avec les données déjà "
+                                "vérifiées, sans nouvel outil."
+                            ),
                         }
                     )
         finally:
@@ -300,9 +314,13 @@ class JarvisAgent:
                         url = str(item.get("url") or "")
                         if not url:
                             continue
-                        read = tool_registry.execute("browser_read", {"url": url})
-                        used.append("browser_read")
+                        read = tool_registry.execute("web_read", {"url": url})
+                        used.append("web_read")
                         observations.append(self._compact_execution(read))
+                        if read.state is ToolState.FAILED:
+                            rendered = tool_registry.execute("browser_read", {"url": url})
+                            used.append("browser_read")
+                            observations.append(self._compact_execution(rendered))
                         read_count += 1
 
     @staticmethod
@@ -319,6 +337,7 @@ class JarvisAgent:
             "results",
             "newsletter_count",
             "card_id",
+            "command_id",
             "title",
             "summary",
             "source",
@@ -326,6 +345,8 @@ class JarvisAgent:
             "text",
             "query",
             "backend",
+            "status_code",
+            "content_type",
         ):
             if key in data:
                 value = data[key]
@@ -348,17 +369,28 @@ class JarvisAgent:
                 lines = []
                 for index, item in enumerate(actions[:3], start=1):
                     if isinstance(item, dict):
-                        lines.append(f"{index}. {item.get('title') or item.get('summary') or 'Message important'}")
+                        lines.append(
+                            f"{index}. {item.get('title') or item.get('summary') or 'Message important'}"
+                        )
                 return "Tu as " + str(len(actions)) + " élément(s) important(s). " + " ".join(lines)
             if route == "files" and isinstance(first.get("results"), list):
                 results = first["results"]
                 if results:
-                    return f"J'ai trouvé {len(results)} document(s) qui peuvent correspondre. Je peux t'aider à choisir le bon."
+                    return (
+                        f"J'ai trouvé {len(results)} document(s) qui peuvent correspondre. "
+                        "Je peux t'aider à choisir le bon."
+                    )
                 return "Je n'ai pas trouvé de document correspondant avec cette recherche."
             if route == "current_info":
                 for item in observations:
-                    if item.get("tool") == "browser_read" and item.get("state") == "success":
-                        return "J'ai trouvé des sources actuelles, mais mon moteur IA local n'est pas disponible pour les résumer proprement."
+                    if item.get("tool") in {"web_read", "browser_read"} and item.get("state") in {
+                        "success",
+                        "partial",
+                    }:
+                        return (
+                            "J'ai trouvé et lu des sources actuelles, mais mon moteur IA local n'est pas "
+                            "disponible pour les résumer proprement."
+                        )
                 return "Je n'ai pas pu vérifier cette information actuelle correctement."
         cards = [
             card
@@ -371,11 +403,15 @@ class JarvisAgent:
             if str(card.metadata.get("category") or "") == "newsletter"
         )
         lowered = prompt.casefold()
-        if any(term in lowered for term in ("point", "important", "aujourd", "quoi faire", "priorité", "priorite")):
+        if any(
+            term in lowered
+            for term in ("point", "important", "aujourd", "quoi faire", "priorité", "priorite")
+        ):
             return secretary_formatter.briefing(cards, newsletters)
         return (
             "Mon moteur IA local n'est pas disponible pour cette question, mais je peux toujours vérifier tes "
-            "mails, chercher tes documents, ouvrir les applications autorisées et te montrer ce qui demande ton attention."
+            "mails, chercher tes documents, ouvrir les applications autorisées et te montrer ce qui demande "
+            "ton attention."
         )
 
 
