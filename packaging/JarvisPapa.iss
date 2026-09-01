@@ -39,12 +39,14 @@ Source: "..\dist\JarvisNativeHost.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\dist\JarvisDiagnostic.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\dist\jarvis-papa-thunderbird.xpi"; DestDir: "{app}\Thunderbird"; Flags: ignoreversion
 Source: "install_thunderbird_host.ps1"; DestDir: "{app}\tools"; Flags: ignoreversion
+Source: "..\scripts\validate_final_pc.ps1"; DestDir: "{app}\tools"; Flags: ignoreversion
 Source: "jarvis.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{userdesktop}\Jarvis"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\jarvis.ico"
 Name: "{userprograms}\Jarvis Papa\Jarvis"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\jarvis.ico"
 Name: "{userprograms}\Jarvis Papa\Diagnostic Jarvis"; Filename: "{app}\JarvisDiagnostic.exe"; WorkingDir: "{app}"; IconFilename: "{app}\jarvis.ico"
+Name: "{userprograms}\Jarvis Papa\Validation complète du PC"; Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\tools\validate_final_pc.ps1"" -JarvisExe ""{app}\{#MyAppExeName}"""; WorkingDir: "{app}"; IconFilename: "{app}\jarvis.ico"
 Name: "{userprograms}\Jarvis Papa\Extension Thunderbird"; Filename: "{app}\Thunderbird"; WorkingDir: "{app}"
 Name: "{userprograms}\Jarvis Papa\Désinstaller Jarvis"; Filename: "{uninstallexe}"
 
