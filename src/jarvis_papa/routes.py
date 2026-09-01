@@ -7,11 +7,14 @@ from jarvis_papa.actions import ActionKind, action_queue
 from jarvis_papa.agent import jarvis_agent
 from jarvis_papa.ai import local_ai
 from jarvis_papa.attachments import attachment_broker
+from jarvis_papa.audit import audit_log
 from jarvis_papa.browser import browser_agent
 from jarvis_papa.config import settings
+from jarvis_papa.confirmations import confirmation_manager
 from jarvis_papa.dashboard import dashboard_html
 from jarvis_papa.desktop import desktop_controller
 from jarvis_papa.files import file_searcher
+from jarvis_papa.http_security import install_http_security
 from jarvis_papa.mail import IncomingMail, mail_assistant
 from jarvis_papa.memory import memory_store
 from jarvis_papa.security import ActionDecision, ActionRisk, security_policy
@@ -21,6 +24,8 @@ from jarvis_papa.windows_automation import windows_uia
 
 
 class SensitiveRequest(BaseModel):
+    authorization_token: str = Field(default="", max_length=200)
+    # Deprecated compatibility fields. They are intentionally ignored by real actions.
     confirmations: int = Field(default=0, ge=0, le=2)
     confirmed: bool = False
 
@@ -29,37 +34,50 @@ class SecurityCheckRequest(SensitiveRequest):
     risk: ActionRisk
 
 
+class ConfirmationStartRequest(BaseModel):
+    action_key: str = Field(min_length=2, max_length=120)
+    description: str = Field(min_length=2, max_length=500)
+
+
 class SpeechEventRequest(BaseModel):
-    text: str
+    text: str = Field(min_length=1, max_length=2000)
     importance: SpeechImportance = SpeechImportance.NORMAL
     user_initiated: bool = False
     action_required: bool = False
-    dedupe_key: str | None = None
+    dedupe_key: str | None = Field(default=None, max_length=300)
+    sensitive: bool = False
 
 
 class IncomingMailRequest(BaseModel):
     message_id: int | None = None
-    header_message_id: str | None = None
-    author: str = ""
-    subject: str = ""
-    body: str = ""
-    folder: str = "Inbox"
+    header_message_id: str | None = Field(default=None, max_length=1000)
+    author: str = Field(default="", max_length=1000)
+    subject: str = Field(default="", max_length=1000)
+    body: str = Field(default="", max_length=50000)
+    folder: str = Field(default="Inbox", max_length=500)
+    list_unsubscribe: bool = False
+    junk: bool = False
+    date: str | None = Field(default=None, max_length=100)
 
 
 class ActionExecuteRequest(SensitiveRequest):
-    option_id: str
+    option_id: str = Field(min_length=1, max_length=100)
 
 
 class AttachmentReplyRequest(SensitiveRequest):
     paths: list[str] = Field(min_length=1, max_length=5)
 
 
+class SnoozeRequest(SensitiveRequest):
+    hours: float = Field(default=4.0, ge=0.25, le=168.0)
+
+
 class OpenPathRequest(BaseModel):
-    path: str
+    path: str = Field(min_length=1, max_length=4000)
 
 
 class StartAppRequest(BaseModel):
-    app: str
+    app: str = Field(min_length=1, max_length=80)
 
 
 class WebSearchRequest(BaseModel):
@@ -102,6 +120,11 @@ class UIASetTextRequest(SensitiveRequest):
     text: str = Field(max_length=10000)
 
 
+class ThunderbirdAckRequest(BaseModel):
+    ok: bool
+    error: str | None = Field(default=None, max_length=1200)
+
+
 def decision_payload(decision: ActionDecision) -> dict[str, object]:
     return {
         "allowed": decision.allowed,
@@ -113,11 +136,25 @@ def decision_payload(decision: ActionDecision) -> dict[str, object]:
     }
 
 
-def sensitive_decision(request: SensitiveRequest) -> ActionDecision:
-    return security_policy.evaluate(
-        ActionRisk.WRITE,
-        confirmations=request.confirmations,
-        confirmed=request.confirmed,
+def sensitive_decision(request: SensitiveRequest, action_key: str) -> ActionDecision:
+    if confirmation_manager.consume(request.authorization_token, action_key):
+        audit_log.record("authorization_consumed", action=action_key, ok=True)
+        return ActionDecision(
+            allowed=True,
+            requires_confirmation=True,
+            reason="Deux autorisations serveur reçues. Jeton utilisé une seule fois.",
+            confirmations_required=2,
+            confirmations_received=2,
+        )
+    return ActionDecision(
+        allowed=False,
+        requires_confirmation=True,
+        reason=(
+            "Action bloquée. Deux autorisations successives dans Jarvis sont obligatoires ; "
+            "un simple compteur envoyé par le navigateur n'est pas accepté."
+        ),
+        confirmations_required=2,
+        confirmations_received=0,
     )
 
 
@@ -130,7 +167,12 @@ def newsletter_cards():
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title=settings.app_name, version=__version__, description="API locale de Jarvis Papa")
+    app = FastAPI(
+        title=settings.app_name,
+        version=__version__,
+        description="API locale de Jarvis Papa",
+    )
+    install_http_security(app)
 
     @app.get("/", response_class=HTMLResponse)
     def dashboard() -> str:
@@ -146,17 +188,18 @@ def create_app() -> FastAPI:
             "name": settings.app_name,
             "user_name": settings.user_name,
             "version": __version__,
-            "local_only": settings.host in {"127.0.0.1", "localhost"},
-            "security": "two_explicit_confirmations_for_changes",
+            "local_only": settings.host in {"127.0.0.1", "localhost", "::1"},
+            "security": "server_enforced_two_step_one_time_grants",
             "modules": {
-                "mail": "important_summaries_and_newsletter_sorting",
+                "mail": "professional_triage_deadlines_and_newsletters",
                 "files": file_searcher.backend,
-                "desktop": "uia_ready" if windows_uia.available else "safe_actions_ready",
+                "desktop": "uia_verified" if windows_uia.available else "safe_actions_ready",
                 "voice_input": "disabled_no_microphone",
-                "voice_output": "important_mail_summaries_ready",
-                "browser": "playwright_ready" if browser_agent.available else "playwright_missing",
-                "ai": "ollama_configured" if local_ai.enabled else "disabled",
+                "voice_output": "privacy_aware_french_voice",
+                "browser": "hardened_playwright" if browser_agent.available else "playwright_missing",
+                "ai": "ollama_configured" if local_ai.enabled else "fallback_secretary",
                 "memory": "sqlite_habits_ready",
+                "tasks": "persistent_prioritized_snooze_ready",
             },
         }
 
@@ -166,12 +209,39 @@ def create_app() -> FastAPI:
 
     @app.post("/api/security/check")
     def security_check(request: SecurityCheckRequest) -> dict[str, object]:
-        decision = security_policy.evaluate(
-            request.risk,
-            confirmations=request.confirmations,
-            confirmed=request.confirmed,
-        )
+        if request.risk is ActionRisk.READ:
+            decision = security_policy.evaluate(ActionRisk.READ)
+        else:
+            decision = ActionDecision(
+                allowed=False,
+                requires_confirmation=True,
+                reason="Utilise le protocole de double autorisation serveur.",
+                confirmations_required=2,
+                confirmations_received=0,
+            )
         return {"risk": request.risk, **decision_payload(decision)}
+
+    @app.post("/api/confirmations/start")
+    def confirmation_start(request: ConfirmationStartRequest) -> dict[str, object]:
+        result = confirmation_manager.start(request.action_key, request.description)
+        audit_log.record(
+            "confirmation_started",
+            action=request.action_key,
+            ok=result.ok,
+            detail=request.description,
+        )
+        return result.to_dict()
+
+    @app.post("/api/confirmations/{challenge_id}/confirm")
+    def confirmation_step(challenge_id: str) -> dict[str, object]:
+        result = confirmation_manager.confirm(challenge_id)
+        audit_log.record(
+            "confirmation_step",
+            action="double_confirmation",
+            ok=result.ok,
+            detail=f"step={result.step}; completed={result.completed}",
+        )
+        return result.to_dict()
 
     @app.post("/api/speech/event")
     def speech_event(request: SpeechEventRequest) -> dict[str, object]:
@@ -181,16 +251,28 @@ def create_app() -> FastAPI:
             user_initiated=request.user_initiated,
             action_required=request.action_required,
             dedupe_key=request.dedupe_key,
+            sensitive=request.sensitive,
+            privacy_fallback_text=(
+                "Robert, j'ai une information importante à te montrer à l'écran."
+                if request.sensitive
+                else None
+            ),
         )
         decision, spoken = speech_coordinator.handle(event)
-        return {"should_speak": decision.should_speak, "spoken": spoken, "reason": decision.reason}
+        return {
+            "should_speak": decision.should_speak,
+            "spoken": spoken,
+            "reason": decision.reason,
+        }
 
     @app.post("/api/assistant/ask")
     def assistant_ask(request: AssistantRequest) -> dict[str, object]:
         result = jarvis_agent.run(request.text)
         spoken = False
         if result.ok and request.speak and result.answer:
-            _, spoken = speech_coordinator.handle(SpeechEvent(text=result.answer, user_initiated=True))
+            _, spoken = speech_coordinator.handle(
+                SpeechEvent(text=result.answer, user_initiated=True)
+            )
         return {**result.to_dict(), "spoken": spoken}
 
     @app.post("/api/mail/incoming")
@@ -202,21 +284,42 @@ def create_app() -> FastAPI:
             subject=request.subject,
             body=request.body,
             folder=request.folder,
+            list_unsubscribe=request.list_unsubscribe,
+            junk=request.junk,
+            date=request.date,
         )
         assessment = mail_assistant.assess(mail)
         card = mail_assistant.create_action_card(mail, assessment)
         spoken = False
         speech_reason = "silent_non_important_mail"
         if card and card.speech_text:
+            fallback = (
+                "Robert, tu as reçu un message sensible à vérifier. Je te montre le résumé à l'écran."
+                if assessment.category == "suspicious"
+                else "Robert, tu as reçu un mail important. Je te montre le résumé à l'écran."
+            )
             decision, spoken = speech_coordinator.handle(
                 SpeechEvent(
                     text=card.speech_text,
                     importance=assessment.importance,
                     action_required=assessment.action_required,
                     dedupe_key=request.header_message_id or f"mail:{request.subject}",
+                    sensitive=assessment.sensitive,
+                    privacy_fallback_text=fallback,
                 )
             )
             speech_reason = decision.reason
+        audit_log.record(
+            "mail_triaged",
+            action=assessment.category,
+            ok=True,
+            metadata={
+                "subject": request.subject[:200],
+                "priority": assessment.priority_score,
+                "deadline": assessment.deadline_text,
+                "confidence": assessment.confidence,
+            },
+        )
         return {
             "accepted": True,
             "category": assessment.category,
@@ -225,12 +328,18 @@ def create_app() -> FastAPI:
             "action_required": assessment.action_required,
             "summary": assessment.summary,
             "spoken_summary": assessment.spoken_summary,
+            "priority_score": assessment.priority_score,
+            "confidence": assessment.confidence,
+            "deadline_text": assessment.deadline_text,
+            "reason": assessment.reason,
+            "recommended_action": assessment.recommended_action,
             "card": card.to_dict() if card else None,
             "speech": {"spoken": spoken, "reason": speech_reason},
         }
 
     @app.get("/api/actions")
     def list_actions() -> list[dict[str, object]]:
+        action_queue.unsnooze_due()
         return [
             card.to_dict()
             for card in action_queue.list()
@@ -242,7 +351,10 @@ def create_app() -> FastAPI:
         cards = newsletter_cards()
         return {
             "count": len(cards),
-            "items": [{"id": card.id, "title": card.title, "source": card.source} for card in cards[:20]],
+            "items": [
+                {"id": card.id, "title": card.title, "source": card.source}
+                for card in cards[:20]
+            ],
         }
 
     @app.post("/api/newsletters/sort")
@@ -250,7 +362,7 @@ def create_app() -> FastAPI:
         cards = newsletter_cards()
         if not cards:
             return {"ok": True, "count": 0, "detail": "Aucune newsletter à ranger."}
-        decision = sensitive_decision(request)
+        decision = sensitive_decision(request, "mail.sort_newsletters")
         if not decision.allowed:
             return {"ok": False, **decision_payload(decision)}
         items = [
@@ -260,11 +372,23 @@ def create_app() -> FastAPI:
             }
             for card in cards
         ]
-        command = thunderbird_commands.enqueue("sort_newsletters", {"items": items})
-        for card in cards:
-            action_queue.remove(card.id)
-        memory_store.record_action("sort_newsletters", str(len(cards)))
-        return {"ok": True, "count": len(cards), "command_id": command.id}
+        command = thunderbird_commands.enqueue(
+            "sort_newsletters",
+            {"items": items},
+            context={"card_ids": [card.id for card in cards]},
+        )
+        audit_log.record(
+            "command_queued",
+            action="mail.sort_newsletters",
+            ok=True,
+            metadata={"count": len(cards), "command_id": command.id},
+        )
+        return {
+            "ok": True,
+            "count": len(cards),
+            "command_id": command.id,
+            "detail": "Tri demandé à Thunderbird. Jarvis attend la confirmation de réussite.",
+        }
 
     @app.post("/api/actions/{card_id}/execute")
     def execute_action(card_id: str, request: ActionExecuteRequest) -> dict[str, object]:
@@ -275,7 +399,7 @@ def create_app() -> FastAPI:
         if option is None:
             raise HTTPException(status_code=404, detail="Option introuvable.")
         if option.requires_confirmation:
-            decision = sensitive_decision(request)
+            decision = sensitive_decision(request, "mail.prepare_reply")
             if not decision.allowed:
                 return {"ok": False, **decision_payload(decision)}
 
@@ -285,7 +409,11 @@ def create_app() -> FastAPI:
             memory_store.record_action("search_files", query)
             return {"ok": True, "kind": option.kind, "results": results}
         if option.kind is ActionKind.OPEN_EMAIL:
-            command = thunderbird_commands.enqueue("open_message", dict(option.payload))
+            command = thunderbird_commands.enqueue(
+                "open_message",
+                dict(option.payload),
+                context={"card_id": card_id},
+            )
             return {"ok": True, "kind": option.kind, "command_id": command.id}
         if option.kind is ActionKind.SEND_REPLY:
             draft = local_ai.draft_reply(
@@ -296,26 +424,42 @@ def create_app() -> FastAPI:
             )
             payload = dict(option.payload)
             payload["body"] = draft.body
-            command = thunderbird_commands.enqueue("prepare_reply", payload)
+            command = thunderbird_commands.enqueue(
+                "prepare_reply",
+                payload,
+                context={"card_id": card_id},
+            )
+            audit_log.record(
+                "command_queued",
+                action="mail.prepare_reply",
+                ok=True,
+                metadata={"command_id": command.id, "generated_by_ai": draft.generated_by_ai},
+            )
             return {
                 "ok": True,
                 "kind": option.kind,
                 "command_id": command.id,
                 "generated_by_ai": draft.generated_by_ai,
-                "detail": "Brouillon préparé. Aucun mail n'a été envoyé.",
+                "detail": (
+                    "J'ai demandé à Thunderbird de préparer le brouillon. "
+                    "Aucun mail n'a été envoyé."
+                ),
             }
         if option.kind is ActionKind.OPEN_FILE:
             return desktop_controller.open_path(str(option.payload.get("path", ""))).to_dict()
         if option.kind is ActionKind.DISMISS:
-            return {"ok": action_queue.remove(card_id), "kind": option.kind}
+            return {"ok": action_queue.snooze(card_id), "kind": option.kind}
         raise HTTPException(status_code=400, detail="Action non gérée.")
 
     @app.post("/api/actions/{card_id}/attach")
-    def prepare_reply_with_attachments(card_id: str, request: AttachmentReplyRequest) -> dict[str, object]:
+    def prepare_reply_with_attachments(
+        card_id: str,
+        request: AttachmentReplyRequest,
+    ) -> dict[str, object]:
         card = action_queue.get(card_id)
         if card is None:
             raise HTTPException(status_code=404, detail="Action introuvable.")
-        decision = sensitive_decision(request)
+        decision = sensitive_decision(request, "mail.prepare_reply_attachment")
         if not decision.allowed:
             return {"ok": False, **decision_payload(decision)}
         leases = []
@@ -324,6 +468,8 @@ def create_app() -> FastAPI:
                 leases.append(attachment_broker.register(raw_path))
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=f"Fichier introuvable: {exc}") from exc
+        except (PermissionError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         names = tuple(lease.name for lease in leases)
         draft = local_ai.draft_reply(
             author=str(card.metadata.get("author") or card.source),
@@ -332,10 +478,9 @@ def create_app() -> FastAPI:
             attachment_names=names,
             memory_context=memory_store.context_for(card.source),
         )
-        host = "127.0.0.1" if settings.host in {"127.0.0.1", "localhost"} else settings.host
         attachments = [
             {
-                "url": f"http://{host}:{settings.port}/api/attachments/{lease.token}",
+                "url": f"http://127.0.0.1:{settings.port}/api/attachments/{lease.token}",
                 "name": lease.name,
                 "media_type": lease.media_type,
             }
@@ -349,13 +494,23 @@ def create_app() -> FastAPI:
                 "body": draft.body,
                 "attachments": attachments,
             },
+            context={"card_id": card_id, "attachment_names": list(names)},
+        )
+        audit_log.record(
+            "command_queued",
+            action="mail.prepare_reply_attachment",
+            ok=True,
+            metadata={"command_id": command.id, "attachments": list(names)},
         )
         return {
             "ok": True,
             "command_id": command.id,
             "attachments": list(names),
             "generated_by_ai": draft.generated_by_ai,
-            "detail": "Brouillon préparé avec pièce jointe. Aucun mail n'a été envoyé.",
+            "detail": (
+                "J'ai demandé à Thunderbird de préparer le brouillon avec le document. "
+                "Aucun mail n'a été envoyé."
+            ),
         }
 
     @app.get("/api/attachments/{token}")
@@ -370,9 +525,28 @@ def create_app() -> FastAPI:
             headers={"Cache-Control": "no-store"},
         )
 
+    @app.post("/api/actions/{card_id}/snooze")
+    def snooze_action(card_id: str, request: SnoozeRequest) -> dict[str, object]:
+        decision = sensitive_decision(request, "actions.snooze")
+        if not decision.allowed:
+            return {"ok": False, **decision_payload(decision)}
+        ok = action_queue.snooze(card_id, int(request.hours * 3600))
+        audit_log.record(
+            "task_snoozed",
+            action="actions.snooze",
+            ok=ok,
+            metadata={"card_id": card_id, "hours": request.hours},
+        )
+        return {"ok": ok, "detail": f"Je te le remontrerai dans environ {request.hours:g} heure(s)."}
+
     @app.delete("/api/actions/{card_id}")
-    def dismiss_action(card_id: str) -> dict[str, bool]:
-        return {"ok": action_queue.remove(card_id)}
+    def dismiss_action(card_id: str, request: SensitiveRequest) -> dict[str, object]:
+        decision = sensitive_decision(request, "actions.dismiss")
+        if not decision.allowed:
+            return {"ok": False, **decision_payload(decision)}
+        ok = action_queue.remove(card_id)
+        audit_log.record("task_removed", action="actions.dismiss", ok=ok, metadata={"card_id": card_id})
+        return {"ok": ok}
 
     @app.get("/api/files/search")
     def search_files(
@@ -400,25 +574,29 @@ def create_app() -> FastAPI:
 
     @app.post("/api/windows/invoke")
     def windows_invoke(request: UIAInvokeRequest) -> dict[str, object]:
-        decision = sensitive_decision(request)
+        decision = sensitive_decision(request, "windows.invoke")
         if not decision.allowed:
             return {"ok": False, **decision_payload(decision)}
-        return windows_uia.invoke_control(
+        result = windows_uia.invoke_control(
             window_title=request.window_title,
             control_name=request.control_name,
             control_type=request.control_type,
-        ).to_dict()
+        )
+        audit_log.record("windows_action", action="windows.invoke", ok=result.ok, detail=result.detail)
+        return result.to_dict()
 
     @app.post("/api/windows/text")
     def windows_set_text(request: UIASetTextRequest) -> dict[str, object]:
-        decision = sensitive_decision(request)
+        decision = sensitive_decision(request, "windows.set_text")
         if not decision.allowed:
             return {"ok": False, **decision_payload(decision)}
-        return windows_uia.set_text(
+        result = windows_uia.set_text(
             window_title=request.window_title,
             control_name=request.control_name,
             text=request.text,
-        ).to_dict()
+        )
+        audit_log.record("windows_action", action="windows.set_text", ok=result.ok, detail=result.detail)
+        return result.to_dict()
 
     @app.post("/api/browser/search")
     def browser_search(request: WebSearchRequest) -> dict[str, object]:
@@ -430,17 +608,25 @@ def create_app() -> FastAPI:
 
     @app.post("/api/browser/download")
     def browser_download(request: BrowserDownloadRequest) -> dict[str, object]:
-        decision = sensitive_decision(request)
+        decision = sensitive_decision(request, "browser.download")
         if not decision.allowed:
             return {"ok": False, **decision_payload(decision)}
-        return browser_agent.download_by_text(request.url, request.link_text).to_dict()
+        result = browser_agent.download_by_text(request.url, request.link_text)
+        audit_log.record("browser_action", action="browser.download", ok=result.ok, detail=result.detail)
+        return result.to_dict()
 
     @app.post("/api/memory/remember")
     def remember(request: RememberRequest) -> dict[str, object]:
-        decision = sensitive_decision(request)
+        decision = sensitive_decision(request, "memory.remember")
         if not decision.allowed:
             return {"ok": False, **decision_payload(decision)}
         item = memory_store.remember(request.category, request.key, request.value)
+        audit_log.record(
+            "memory_updated",
+            action="memory.remember",
+            ok=True,
+            metadata={"category": request.category, "key": request.key},
+        )
         return {"ok": True, "memory": item.to_dict()}
 
     @app.get("/api/memory/recall")
@@ -451,12 +637,78 @@ def create_app() -> FastAPI:
     def habits() -> dict[str, object]:
         return {"results": [habit.to_dict() for habit in memory_store.habits()]}
 
+    @app.get("/api/audit/recent")
+    def audit_recent(limit: int = Query(default=30, ge=1, le=100)) -> dict[str, object]:
+        return {"results": audit_log.recent(limit)}
+
     @app.get("/api/thunderbird/commands")
     def list_thunderbird_commands() -> list[dict[str, object]]:
         return [command.to_dict() for command in thunderbird_commands.pending()]
 
+    @app.get("/api/thunderbird/history")
+    def thunderbird_history() -> list[dict[str, object]]:
+        return [command.to_dict() for command in thunderbird_commands.recent()]
+
     @app.post("/api/thunderbird/commands/{command_id}/ack")
-    def acknowledge_thunderbird_command(command_id: str) -> dict[str, bool]:
-        return {"ok": thunderbird_commands.acknowledge(command_id)}
+    def acknowledge_thunderbird_command(
+        command_id: str,
+        request: ThunderbirdAckRequest,
+    ) -> dict[str, object]:
+        command = thunderbird_commands.get(command_id)
+        if command is None:
+            return {"ok": False, "detail": "Commande inconnue."}
+        updated = thunderbird_commands.acknowledge(
+            command_id,
+            ok=request.ok,
+            error=request.error,
+        )
+        if not updated:
+            return {"ok": False, "detail": "Accusé de réception non enregistré."}
+
+        if request.ok and command.kind == "sort_newsletters":
+            card_ids = command.context.get("card_ids")
+            if isinstance(card_ids, list):
+                action_queue.remove_many([str(item) for item in card_ids])
+                memory_store.record_action("sort_newsletters", str(len(card_ids)))
+        elif not request.ok:
+            detail = request.error or "Thunderbird n'a pas pu terminer l'action."
+            action_queue.create(
+                title="Une action Thunderbird a échoué",
+                summary=f"Jarvis n'a rien considéré comme réussi. {detail[:220]}",
+                source="Jarvis",
+                importance=SpeechImportance.HIGH.value,
+                speech_text=(
+                    "Robert, une action dans Thunderbird a échoué. Je n'ai rien considéré "
+                    "comme terminé. Regarde l'écran pour le détail."
+                ),
+                metadata={
+                    "category": "system_error",
+                    "priority_score": 95,
+                    "command_id": command_id,
+                    "recommended_action": "Ouvrir Thunderbird et vérifier avant de réessayer.",
+                },
+                priority_score=95,
+                dedupe_key=f"command-error:{command_id}",
+            )
+        audit_log.record(
+            "command_ack",
+            action=command.kind,
+            ok=request.ok,
+            detail=request.error or "Commande confirmée par Thunderbird.",
+            metadata={"command_id": command_id},
+        )
+        return {"ok": True, "status": "succeeded" if request.ok else "failed"}
+
+    @app.post("/api/thunderbird/commands/{command_id}/retry")
+    def retry_thunderbird_command(
+        command_id: str,
+        request: SensitiveRequest,
+    ) -> dict[str, object]:
+        decision = sensitive_decision(request, "thunderbird.retry")
+        if not decision.allowed:
+            return {"ok": False, **decision_payload(decision)}
+        ok = thunderbird_commands.retry(command_id)
+        audit_log.record("command_retry", action="thunderbird.retry", ok=ok, metadata={"command_id": command_id})
+        return {"ok": ok}
 
     return app
