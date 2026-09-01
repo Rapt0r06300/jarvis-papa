@@ -118,7 +118,11 @@ class WindowsUIAutomation:
             control.set_edit_text(text)
             actual = control.window_text()
             if actual != text:
-                return UIAResult(False, "set_text", "La saisie n'a pas pu être vérifiée ; Jarvis la considère comme échouée.")
+                return UIAResult(
+                    False,
+                    "set_text",
+                    "La saisie n'a pas pu être vérifiée ; Jarvis la considère comme échouée.",
+                )
         except Exception as exc:  # noqa: BLE001 - pywinauto wraps multiple COM/UIA errors.
             return UIAResult(False, "set_text", str(exc))
         return UIAResult(True, "set_text", "Texte saisi et vérifié dans le contrôle.")
@@ -127,7 +131,7 @@ class WindowsUIAutomation:
     def _unique_window(title: str):
         from pywinauto import Desktop
 
-        pattern = re.compile(f".*{re.escape(title.strip())}.*", re.I)
+        pattern = re.compile(f".*{re.escape(title.strip())}.*", re.IGNORECASE)
         matches = [
             window
             for window in Desktop(backend="uia").windows()
