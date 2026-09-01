@@ -9,6 +9,7 @@ import urllib.request
 from typing import Any
 
 from jarvis_papa.config import settings
+from jarvis_papa.local_api_auth import api_auth_headers
 
 _write_lock = threading.Lock()
 _sent_lock = threading.Lock()
@@ -25,7 +26,13 @@ def _api_request(
     payload: dict[str, object] | None = None,
 ) -> dict[str, Any] | list[Any] | None:
     data = None
-    headers: dict[str, str] = {"X-Jarvis-Bridge": "thunderbird-native-host"}
+    try:
+        headers: dict[str, str] = {
+            "X-Jarvis-Bridge": "thunderbird-native-host",
+            **api_auth_headers("thunderbird-native-host"),
+        }
+    except (OSError, RuntimeError, ValueError):
+        return None
     if payload is not None:
         data = json.dumps(payload).encode("utf-8")
         headers["Content-Type"] = "application/json"
