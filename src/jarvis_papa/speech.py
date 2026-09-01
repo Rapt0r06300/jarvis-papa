@@ -1,12 +1,10 @@
-import base64
-import platform
-import subprocess
 import time
 from dataclasses import dataclass
 from enum import StrEnum
 from threading import Lock
 
 from jarvis_papa.config import settings
+from jarvis_papa.voice import voice_service
 
 
 class SpeechImportance(StrEnum):
@@ -52,41 +50,23 @@ class SpeechPolicy:
         return SpeechDecision(False, "not_important_enough_to_interrupt")
 
 
-class WindowsSpeaker:
-    """Speak through Windows speakers without requiring any microphone."""
+class SmartSpeaker:
+    """Generate a natural French voice, with automatic provider fallback."""
 
     @property
     def available(self) -> bool:
-        return platform.system() == "Windows"
+        status = voice_service.status()
+        providers = status.get("providers", {})
+        return any(bool(item.get("available")) for item in providers.values())
 
     def speak_async(self, text: str) -> bool:
-        if not self.available:
-            return False
-
-        encoded = base64.b64encode(text.encode("utf-8")).decode("ascii")
-        script = (
-            f"$bytes=[Convert]::FromBase64String('{encoded}');"
-            "$text=[Text.Encoding]::UTF8.GetString($bytes);"
-            "Add-Type -AssemblyName System.Speech;"
-            "$voice=New-Object System.Speech.Synthesis.SpeechSynthesizer;"
-            "$voice.Volume=100;"
-            "$voice.Rate=0;"
-            "$voice.Speak($text);"
-        )
-        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        subprocess.Popen(
-            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            creationflags=creationflags,
-        )
-        return True
+        return voice_service.speak(text).ok
 
 
 class SpeechCoordinator:
     def __init__(self) -> None:
         self.policy = SpeechPolicy()
-        self.speaker = WindowsSpeaker()
+        self.speaker = SmartSpeaker()
         self._recent: dict[str, float] = {}
         self._lock = Lock()
 
@@ -96,7 +76,7 @@ class SpeechCoordinator:
         spoken = False
         if decision.should_speak:
             spoken = self.speaker.speak_async(event.text)
-            if event.dedupe_key:
+            if event.dedupe_key and spoken:
                 self._remember(event.dedupe_key)
         return decision, spoken
 
