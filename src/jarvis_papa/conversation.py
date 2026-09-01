@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from jarvis_papa.agent import IntentRouter, jarvis_agent
 from jarvis_papa.metrics import local_metrics
+from jarvis_papa.tracing import trace_store
 
 
 _ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{8,80}$")
@@ -85,6 +86,7 @@ class ConversationManager:
         conversation_id: str | None = None,
         request_id: str | None = None,
     ) -> ConversationTurn:
+        started_wall = time.time()
         started = time.monotonic()
         request_id = self._normalize_id(request_id)
         session = self._get_or_create(conversation_id)
@@ -151,6 +153,17 @@ class ConversationManager:
             ok=result.ok,
             final_state=result.final_state,
             retry_count=result.retry_count,
+        )
+        trace_store.record(
+            request_id=request_id,
+            conversation_id=session.id,
+            route=result.route,
+            model=result.model,
+            tools=result.tools_used,
+            duration_ms=duration_ms,
+            retry_count=result.retry_count,
+            final_state=result.final_state,
+            started_at=started_wall,
         )
         return turn
 
@@ -228,7 +241,7 @@ class ConversationManager:
             tool = str(observation.get("tool") or "")
             if tool in {"pending_actions", "open_action"}:
                 return "mail"
-            if tool == "search_files":
+            if tool in {"search_files", "knowledge_search"}:
                 return "files"
             if tool in {"windows_list", "windows_inspect", "open_app"}:
                 return "windows"
