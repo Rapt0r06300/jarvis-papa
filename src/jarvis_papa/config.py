@@ -1,17 +1,42 @@
+import os
+import sys
 from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+def _is_frozen() -> bool:
+    return bool(getattr(sys, "frozen", False))
+
+
+def _data_dir() -> Path:
+    """Return a stable writable directory for the installed Windows application."""
+
+    if _is_frozen() and sys.platform == "win32":
+        base = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
+        return base / "JarvisPapa"
+    return Path(".")
+
+
+_DATA_DIR = _data_dir()
+_ENV_FILE = _DATA_DIR / ".env" if _is_frozen() else Path(".env")
+_RUNTIME_DIR = _DATA_DIR / "runtime" if _is_frozen() else Path("./runtime")
+_QWEN_PYTHON = (
+    str(_DATA_DIR / "qwen-tts" / "Scripts" / "python.exe")
+    if _is_frozen() and sys.platform == "win32"
+    else ".venv-qwen-tts/Scripts/python.exe"
+)
+
+
 class Settings(BaseSettings):
-    """Local Jarvis configuration loaded from environment variables or .env."""
+    """Local Jarvis configuration loaded from environment variables or a per-user .env."""
 
     app_name: str = "Jarvis Papa"
     user_name: str = "Robert"
     host: str = "127.0.0.1"
     port: int = 8765
     log_level: str = "INFO"
-    runtime_dir: Path = Path("./runtime")
+    runtime_dir: Path = _RUNTIME_DIR
 
     speech_enabled: bool = True
     speech_repeat_cooldown_seconds: int = 300
@@ -41,7 +66,7 @@ class Settings(BaseSettings):
     azure_output_format: str = "audio-24khz-48kbitrate-mono-mp3"
 
     qwen3_tts_enabled: bool = True
-    qwen3_tts_python: str = ".venv-qwen-tts/Scripts/python.exe"
+    qwen3_tts_python: str = _QWEN_PYTHON
     qwen3_tts_model: str = "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign"
     qwen3_tts_language: str = "French"
     qwen3_tts_speaker: str = "Serena"
@@ -110,7 +135,7 @@ class Settings(BaseSettings):
     )
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=_ENV_FILE,
         env_prefix="JARVIS_",
         extra="ignore",
     )
