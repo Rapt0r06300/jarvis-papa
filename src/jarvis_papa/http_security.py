@@ -1,13 +1,23 @@
 from __future__ import annotations
 
 import ipaddress
+import secrets
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
+from jarvis_papa.local_api_auth import local_api_token
+
 _ALLOWED_HOSTS = {"127.0.0.1", "localhost", "::1", "testserver"}
 _ALLOWED_TEST_CLIENTS = {"testclient"}
+_PUBLIC_LOCAL_PATHS = {
+    "/",
+    "/health",
+    "/api/status",
+    "/api/advanced/voice/quality",
+    "/openapi.json",
+}
 
 
 def _hostname(value: str) -> str:
@@ -35,6 +45,18 @@ def _is_loopback_client(host: str) -> bool:
         return host.casefold() == "localhost"
 
 
+def _authorized(request: Request, expected: str) -> bool:
+    if not expected:
+        return True
+    value = request.headers.get("authorization", "")
+    scheme, _, supplied = value.partition(" ")
+    return (
+        scheme.casefold() == "bearer"
+        and bool(supplied)
+        and secrets.compare_digest(supplied.strip(), expected)
+    )
+
+
 def install_http_security(app: FastAPI) -> None:
     @app.middleware("http")
     async def local_only_guard(request: Request, call_next):
@@ -53,6 +75,22 @@ def install_http_security(app: FastAPI) -> None:
             referer = request.headers.get("referer", "")
             if referer and _hostname(referer) not in _ALLOWED_HOSTS:
                 return JSONResponse(status_code=403, content={"detail": "Référent web refusé."})
+
+        try:
+            expected_token = local_api_token()
+        except (OSError, RuntimeError, ValueError):
+            return JSONResponse(
+                status_code=503,
+                content={"detail": "La protection locale de Jarvis est indisponible."},
+            )
+        if request.url.path not in _PUBLIC_LOCAL_PATHS and not _authorized(
+            request, expected_token
+        ):
+            return JSONResponse(
+                status_code=401,
+                headers={"WWW-Authenticate": "Bearer"},
+                content={"detail": "Client Jarvis local non authentifié."},
+            )
 
         response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
