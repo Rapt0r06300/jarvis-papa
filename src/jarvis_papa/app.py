@@ -1,16 +1,24 @@
+from pathlib import Path
+
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, Field
 
 from jarvis_papa import __version__
 from jarvis_papa.actions import ActionKind, action_queue
+from jarvis_papa.agent import jarvis_agent
+from jarvis_papa.ai import local_ai
+from jarvis_papa.attachments import attachment_broker
+from jarvis_papa.browser import browser_agent
 from jarvis_papa.config import settings
 from jarvis_papa.desktop import desktop_controller
 from jarvis_papa.files import file_searcher
 from jarvis_papa.mail import IncomingMail, mail_assistant
+from jarvis_papa.memory import memory_store
 from jarvis_papa.security import ActionRisk, security_policy
 from jarvis_papa.speech import SpeechEvent, SpeechImportance, speech_coordinator
 from jarvis_papa.thunderbird import thunderbird_commands
+from jarvis_papa.windows_automation import windows_uia
 
 
 class SecurityCheckRequest(BaseModel):
@@ -40,6 +48,11 @@ class ActionExecuteRequest(BaseModel):
     confirmed: bool = False
 
 
+class AttachmentReplyRequest(BaseModel):
+    paths: list[str] = Field(min_length=1, max_length=5)
+    confirmed: bool = False
+
+
 class OpenPathRequest(BaseModel):
     path: str
 
@@ -50,6 +63,45 @@ class StartAppRequest(BaseModel):
 
 class WebSearchRequest(BaseModel):
     query: str = Field(min_length=1, max_length=500)
+
+
+class BrowserReadRequest(BaseModel):
+    url: str = Field(min_length=8, max_length=3000)
+
+
+class BrowserDownloadRequest(BaseModel):
+    url: str = Field(min_length=8, max_length=3000)
+    link_text: str = Field(min_length=1, max_length=500)
+    confirmed: bool = False
+
+
+class AssistantRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=3000)
+    speak: bool = True
+
+
+class RememberRequest(BaseModel):
+    category: str = Field(min_length=1, max_length=80)
+    key: str = Field(min_length=1, max_length=160)
+    value: str = Field(min_length=1, max_length=3000)
+
+
+class UIAInspectRequest(BaseModel):
+    window_title: str = Field(min_length=1, max_length=300)
+
+
+class UIAInvokeRequest(BaseModel):
+    window_title: str = Field(min_length=1, max_length=300)
+    control_name: str = Field(min_length=1, max_length=300)
+    control_type: str | None = Field(default=None, max_length=80)
+    confirmed: bool = False
+
+
+class UIASetTextRequest(BaseModel):
+    window_title: str = Field(min_length=1, max_length=300)
+    control_name: str = Field(min_length=1, max_length=300)
+    text: str = Field(max_length=10000)
+    confirmed: bool = False
 
 
 def create_app() -> FastAPI:
@@ -75,15 +127,20 @@ def create_app() -> FastAPI:
             "version": __version__,
             "local_only": settings.host in {"127.0.0.1", "localhost"},
             "modules": {
-                "mail": "bridge_ready",
+                "mail": "thunderbird_bridge_with_attachments",
                 "files": file_searcher.backend,
-                "desktop": "windows_safe_actions_ready",
+                "desktop": "uia_ready" if windows_uia.available else "safe_actions_ready",
                 "voice_input": "disabled_no_microphone",
                 "voice_output": "intelligent_policy_ready",
-                "browser": "basic_search_ready",
-                "calendar": "planned",
+                "browser": "playwright_ready" if browser_agent.available else "playwright_missing",
+                "ai": "ollama_configured" if local_ai.enabled else "disabled",
+                "memory": "sqlite_habits_ready",
             },
         }
+
+    @app.get("/api/ai/status")
+    def ai_status() -> dict[str, object]:
+        return local_ai.status()
 
     @app.post("/api/security/check")
     def security_check(request: SecurityCheckRequest) -> dict[str, object]:
@@ -110,6 +167,16 @@ def create_app() -> FastAPI:
             "spoken": spoken,
             "reason": decision.reason,
         }
+
+    @app.post("/api/assistant/ask")
+    def assistant_ask(request: AssistantRequest) -> dict[str, object]:
+        result = jarvis_agent.run(request.text)
+        spoken = False
+        if result.ok and request.speak and result.answer:
+            _, spoken = speech_coordinator.handle(
+                SpeechEvent(text=result.answer, user_initiated=True)
+            )
+        return {**result.to_dict(), "spoken": spoken}
 
     @app.post("/api/mail/incoming")
     def incoming_mail(request: IncomingMailRequest) -> dict[str, object]:
@@ -172,30 +239,116 @@ def create_app() -> FastAPI:
         if option.kind is ActionKind.SEARCH_FILES:
             query = str(option.payload.get("query", ""))
             results = [item.to_dict() for item in file_searcher.search(query)]
+            memory_store.record_action("search_files", query)
             return {"ok": True, "kind": option.kind, "results": results}
 
         if option.kind is ActionKind.OPEN_EMAIL:
             command = thunderbird_commands.enqueue("open_message", dict(option.payload))
+            memory_store.record_action("open_email", card.source)
             return {"ok": True, "kind": option.kind, "command_id": command.id}
 
         if option.kind is ActionKind.SEND_REPLY:
-            payload = dict(option.payload)
-            payload.setdefault(
-                "body",
-                "Bonjour,\n\nMerci pour votre message. J’ai bien reçu votre demande.\n\n"
-                "Cordialement,\nRobert",
+            draft = local_ai.draft_reply(
+                author=str(card.metadata.get("author") or card.source),
+                subject=str(card.metadata.get("subject") or card.title),
+                body=str(card.metadata.get("body") or card.summary),
+                memory_context=memory_store.context_for(card.source),
             )
+            payload = dict(option.payload)
+            payload["body"] = draft.body
             command = thunderbird_commands.enqueue("prepare_reply", payload)
-            return {"ok": True, "kind": option.kind, "command_id": command.id}
+            memory_store.record_action("prepare_reply", card.source)
+            return {
+                "ok": True,
+                "kind": option.kind,
+                "command_id": command.id,
+                "generated_by_ai": draft.generated_by_ai,
+            }
 
         if option.kind is ActionKind.OPEN_FILE:
             path = str(option.payload.get("path", ""))
-            return desktop_controller.open_path(path).to_dict()
+            result = desktop_controller.open_path(path).to_dict()
+            if result.get("ok"):
+                memory_store.record_action("open_file", path)
+            return result
 
         if option.kind is ActionKind.DISMISS:
             return {"ok": action_queue.remove(card_id), "kind": option.kind}
 
         raise HTTPException(status_code=400, detail="Action non gérée.")
+
+    @app.post("/api/actions/{card_id}/attach")
+    def prepare_reply_with_attachments(
+        card_id: str,
+        request: AttachmentReplyRequest,
+    ) -> dict[str, object]:
+        card = action_queue.get(card_id)
+        if card is None:
+            raise HTTPException(status_code=404, detail="Action introuvable.")
+        decision = security_policy.evaluate(ActionRisk.WRITE, confirmed=request.confirmed)
+        if not decision.allowed:
+            return {
+                "ok": False,
+                "requires_confirmation": True,
+                "reason": decision.reason,
+            }
+
+        leases = []
+        try:
+            for raw_path in request.paths:
+                leases.append(attachment_broker.register(raw_path))
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=f"Fichier introuvable: {exc}") from exc
+
+        names = tuple(lease.name for lease in leases)
+        draft = local_ai.draft_reply(
+            author=str(card.metadata.get("author") or card.source),
+            subject=str(card.metadata.get("subject") or card.title),
+            body=str(card.metadata.get("body") or card.summary),
+            attachment_names=names,
+            memory_context=memory_store.context_for(card.source),
+        )
+        host = "127.0.0.1" if settings.host in {"127.0.0.1", "localhost"} else settings.host
+        attachments = [
+            {
+                "url": f"http://{host}:{settings.port}/api/attachments/{lease.token}",
+                "name": lease.name,
+                "media_type": lease.media_type,
+            }
+            for lease in leases
+        ]
+        command = thunderbird_commands.enqueue(
+            "prepare_reply",
+            {
+                "message_id": card.metadata.get("message_id"),
+                "header_message_id": card.metadata.get("header_message_id"),
+                "body": draft.body,
+                "attachments": attachments,
+            },
+        )
+        memory_store.record_action(
+            "prepare_reply_with_attachment",
+            card.source,
+            {"files": list(names)},
+        )
+        return {
+            "ok": True,
+            "command_id": command.id,
+            "attachments": list(names),
+            "generated_by_ai": draft.generated_by_ai,
+        }
+
+    @app.get("/api/attachments/{token}")
+    def consume_attachment(token: str) -> FileResponse:
+        lease = attachment_broker.consume(token)
+        if lease is None:
+            raise HTTPException(status_code=404, detail="Pièce jointe expirée ou inconnue.")
+        return FileResponse(
+            path=lease.path,
+            media_type=lease.media_type,
+            filename=lease.name,
+            headers={"Cache-Control": "no-store"},
+        )
 
     @app.delete("/api/actions/{card_id}")
     def dismiss_action(card_id: str) -> dict[str, bool]:
@@ -217,14 +370,56 @@ def create_app() -> FastAPI:
         decision = security_policy.evaluate(ActionRisk.READ)
         if not decision.allowed:
             raise HTTPException(status_code=403, detail=decision.reason)
-        return desktop_controller.open_path(request.path).to_dict()
+        result = desktop_controller.open_path(request.path).to_dict()
+        if result.get("ok"):
+            memory_store.record_action("open_file", request.path)
+        return result
 
     @app.post("/api/desktop/start")
     def start_app(request: StartAppRequest) -> dict[str, object]:
         decision = security_policy.evaluate(ActionRisk.READ)
         if not decision.allowed:
             raise HTTPException(status_code=403, detail=decision.reason)
-        return desktop_controller.start_app(request.app).to_dict()
+        result = desktop_controller.start_app(request.app).to_dict()
+        if result.get("ok"):
+            memory_store.record_action("start_app", request.app)
+        return result
+
+    @app.get("/api/windows/windows")
+    def windows_list() -> dict[str, object]:
+        return windows_uia.list_windows().to_dict()
+
+    @app.post("/api/windows/inspect")
+    def windows_inspect(request: UIAInspectRequest) -> dict[str, object]:
+        return windows_uia.inspect_window(request.window_title).to_dict()
+
+    @app.post("/api/windows/invoke")
+    def windows_invoke(request: UIAInvokeRequest) -> dict[str, object]:
+        decision = security_policy.evaluate(ActionRisk.WRITE, confirmed=request.confirmed)
+        if not decision.allowed:
+            return {"ok": False, "requires_confirmation": True, "reason": decision.reason}
+        result = windows_uia.invoke_control(
+            window_title=request.window_title,
+            control_name=request.control_name,
+            control_type=request.control_type,
+        ).to_dict()
+        if result.get("ok"):
+            memory_store.record_action("uia_invoke", request.control_name)
+        return result
+
+    @app.post("/api/windows/text")
+    def windows_set_text(request: UIASetTextRequest) -> dict[str, object]:
+        decision = security_policy.evaluate(ActionRisk.WRITE, confirmed=request.confirmed)
+        if not decision.allowed:
+            return {"ok": False, "requires_confirmation": True, "reason": decision.reason}
+        result = windows_uia.set_text(
+            window_title=request.window_title,
+            control_name=request.control_name,
+            text=request.text,
+        ).to_dict()
+        if result.get("ok"):
+            memory_store.record_action("uia_set_text", request.control_name)
+        return result
 
     @app.post("/api/browser/search")
     def browser_search(request: WebSearchRequest) -> dict[str, object]:
@@ -232,6 +427,39 @@ def create_app() -> FastAPI:
         if not decision.allowed:
             raise HTTPException(status_code=403, detail=decision.reason)
         return desktop_controller.search_web(request.query).to_dict()
+
+    @app.post("/api/browser/read")
+    def browser_read(request: BrowserReadRequest) -> dict[str, object]:
+        decision = security_policy.evaluate(ActionRisk.READ)
+        if not decision.allowed:
+            raise HTTPException(status_code=403, detail=decision.reason)
+        result = browser_agent.read_url(request.url).to_dict()
+        if result.get("ok"):
+            memory_store.record_action("browser_read", request.url)
+        return result
+
+    @app.post("/api/browser/download")
+    def browser_download(request: BrowserDownloadRequest) -> dict[str, object]:
+        decision = security_policy.evaluate(ActionRisk.WRITE, confirmed=request.confirmed)
+        if not decision.allowed:
+            return {"ok": False, "requires_confirmation": True, "reason": decision.reason}
+        result = browser_agent.download_by_text(request.url, request.link_text).to_dict()
+        if result.get("ok"):
+            memory_store.record_action("browser_download", request.url)
+        return result
+
+    @app.post("/api/memory/remember")
+    def remember(request: RememberRequest) -> dict[str, object]:
+        item = memory_store.remember(request.category, request.key, request.value)
+        return {"ok": True, "memory": item.to_dict()}
+
+    @app.get("/api/memory/recall")
+    def recall(q: str = Query(min_length=1, max_length=500)) -> dict[str, object]:
+        return {"results": [item.to_dict() for item in memory_store.recall(q)]}
+
+    @app.get("/api/memory/habits")
+    def habits() -> dict[str, object]:
+        return {"results": [habit.to_dict() for habit in memory_store.habits()]}
 
     @app.get("/api/thunderbird/commands")
     def list_thunderbird_commands() -> list[dict[str, object]]:
@@ -274,7 +502,8 @@ def _dashboard_html() -> str:
     .empty {{ padding: 22px; border: 1px dashed #344164; border-radius: 18px; color: #91a0ca; }}
     .files {{ margin-top: 14px; display: grid; gap: 8px; }}
     .file {{ padding: 11px; background: #0f1528; border-radius: 12px; display: flex; gap: 10px; justify-content: space-between; align-items: center; }}
-    .file span {{ overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+    .file span {{ overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }}
+    .answer {{ margin-top: 18px; background: #172a23; border-radius: 16px; padding: 16px; color: #dff8e8; display: none; }}
   </style>
 </head>
 <body>
@@ -284,15 +513,18 @@ def _dashboard_html() -> str:
   <p>Jarvis surveille ce qui mérite ton attention et te propose seulement les actions utiles.</p>
 
   <div class="quick">
-    <button onclick="startApp('thunderbird')">Ouvrir Thunderbird</button>
+    <button onclick="dailyBrief()">Fais-moi le point</button>
+    <button class="secondary" onclick="startApp('thunderbird')">Ouvrir Thunderbird</button>
     <button class="secondary" onclick="startApp('explorer')">Ouvrir mes fichiers</button>
   </div>
+  <div id="answer" class="answer"></div>
 
   <h2>Ce qui demande ton attention</h2>
   <div id="cards" class="cards"><div class="empty">Chargement…</div></div>
 </main>
 <script>
 const cardsEl = document.getElementById('cards');
+const answerEl = document.getElementById('answer');
 
 async function api(path, options={{}}) {{
   const response = await fetch(path, {{
@@ -306,6 +538,16 @@ async function startApp(app) {{
   await api('/api/desktop/start', {{method: 'POST', body: JSON.stringify({{app}})}});
 }}
 
+async function dailyBrief() {{
+  answerEl.style.display = 'block';
+  answerEl.textContent = 'Je regarde…';
+  const result = await api('/api/assistant/ask', {{
+    method: 'POST',
+    body: JSON.stringify({{text: 'Fais-moi un point très court sur ce que je devrais faire maintenant.', speak: true}})
+  }});
+  answerEl.textContent = result.answer || 'Le moteur IA local n’est pas disponible.';
+}}
+
 function button(label, onClick, secondary=false) {{
   const el = document.createElement('button');
   el.textContent = label;
@@ -314,7 +556,7 @@ function button(label, onClick, secondary=false) {{
   return el;
 }}
 
-function renderFiles(container, files) {{
+function renderFiles(container, files, card) {{
   const area = document.createElement('div');
   area.className = 'files';
   if (!files.length) {{
@@ -326,9 +568,16 @@ function renderFiles(container, files) {{
     const name = document.createElement('span');
     name.textContent = file.name;
     row.appendChild(name);
+    row.appendChild(button('Utiliser', async () => {{
+      const result = await api(`/api/actions/${{card.id}}/attach`, {{
+        method: 'POST',
+        body: JSON.stringify({{paths: [file.path], confirmed: true}})
+      }});
+      row.replaceChildren(document.createTextNode(result.ok ? 'Brouillon préparé dans Thunderbird ✓' : 'Impossible de préparer le brouillon.'));
+    }}));
     row.appendChild(button('Ouvrir', async () => {{
       await api('/api/files/open', {{method: 'POST', body: JSON.stringify({{path: file.path}})}});
-    }}));
+    }}, true));
     area.appendChild(row);
   }}
   container.appendChild(area);
@@ -348,7 +597,7 @@ async function execute(card, option, cardElement) {{
     }});
     return;
   }}
-  if (result.results) renderFiles(cardElement, result.results);
+  if (result.results) renderFiles(cardElement, result.results, card);
 }}
 
 async function refresh() {{
