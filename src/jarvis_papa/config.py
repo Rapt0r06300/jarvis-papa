@@ -18,6 +18,8 @@ class Settings(BaseSettings):
 
     # Voice output: premium cloud first, high-quality local fallback, Windows last resort.
     voice_provider_order: str = "elevenlabs,azure,qwen3,windows"
+    voice_sensitive_provider_order: str = "qwen3,windows"
+    voice_cloud_for_sensitive_content: bool = False
     voice_speed: float = 0.95
     voice_http_timeout_seconds: float = 30.0
     voice_cache_files: int = 40
@@ -57,6 +59,24 @@ class Settings(BaseSettings):
         Path.home() / "Desktop",
         Path.home() / "Downloads",
     )
+    file_allowed_extensions: tuple[str, ...] = (
+        ".pdf",
+        ".txt",
+        ".md",
+        ".csv",
+        ".doc",
+        ".docx",
+        ".odt",
+        ".xls",
+        ".xlsx",
+        ".ods",
+        ".jpg",
+        ".jpeg",
+        ".png",
+        ".webp",
+        ".eml",
+    )
+    attachment_max_bytes: int = 25 * 1024 * 1024
 
     thunderbird_native_host_name: str = "fr.jarvis_papa.host"
 
@@ -69,6 +89,21 @@ class Settings(BaseSettings):
 
     browser_timeout_seconds: float = 20.0
     browser_max_text_chars: int = 12000
+    browser_download_max_bytes: int = 50 * 1024 * 1024
+    browser_download_extensions: tuple[str, ...] = (
+        ".pdf",
+        ".txt",
+        ".csv",
+        ".doc",
+        ".docx",
+        ".xls",
+        ".xlsx",
+        ".jpg",
+        ".jpeg",
+        ".png",
+        ".webp",
+        ".zip",
+    )
 
     model_config = SettingsConfigDict(
         env_file=".env",
