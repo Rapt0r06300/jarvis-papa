@@ -5,6 +5,7 @@ import subprocess
 import webbrowser
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import ClassVar
 from urllib.parse import quote_plus
 
 
@@ -20,7 +21,7 @@ class DesktopResult:
 
 
 class DesktopController:
-    APP_ALIASES = {
+    APP_ALIASES: ClassVar[dict[str, tuple[str, ...]]] = {
         "thunderbird": ("thunderbird.exe", "thunderbird"),
         "explorer": ("explorer.exe",),
         "notepad": ("notepad.exe",),
