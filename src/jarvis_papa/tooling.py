@@ -11,6 +11,7 @@ from jarvis_papa.browser import browser_agent
 from jarvis_papa.desktop import desktop_controller
 from jarvis_papa.files import file_searcher
 from jarvis_papa.memory import memory_store
+from jarvis_papa.metrics import local_metrics
 from jarvis_papa.thunderbird import thunderbird_commands
 from jarvis_papa.web_read import web_read_service
 from jarvis_papa.web_search import web_search_service
@@ -102,51 +103,74 @@ class ToolRegistry:
         spec = self._specs.get(name)
         handler = self._handlers.get(name)
         if spec is None or handler is None or not spec.agent_callable:
-            return ToolExecution(
-                name,
-                ToolState.FAILED,
-                "Outil non autorisé.",
-                {"error": "tool_not_allowed"},
-                round((time.monotonic() - started) * 1000, 1),
+            return self._finish(
+                ToolExecution(
+                    name,
+                    ToolState.FAILED,
+                    "Outil non autorisé.",
+                    {"error": "tool_not_allowed"},
+                    round((time.monotonic() - started) * 1000, 1),
+                )
             )
         if spec.risk in {ToolRisk.MEDIUM, ToolRisk.HIGH, ToolRisk.CRITICAL} or not spec.read_only:
-            return ToolExecution(
-                name,
-                ToolState.FAILED,
-                "Cet outil exige le circuit d'autorisation serveur et n'est pas exécutable directement par le modèle.",
-                {"error": "policy_gate_required", "risk": spec.risk.value},
-                round((time.monotonic() - started) * 1000, 1),
+            return self._finish(
+                ToolExecution(
+                    name,
+                    ToolState.FAILED,
+                    "Cet outil exige le circuit d'autorisation serveur et n'est pas exécutable directement par le modèle.",
+                    {"error": "policy_gate_required", "risk": spec.risk.value},
+                    round((time.monotonic() - started) * 1000, 1),
+                )
             )
         validation_error = self._validate_arguments(spec, arguments)
         if validation_error:
-            return ToolExecution(
-                name,
-                ToolState.FAILED,
-                validation_error,
-                {"error": "invalid_parameters"},
-                round((time.monotonic() - started) * 1000, 1),
+            return self._finish(
+                ToolExecution(
+                    name,
+                    ToolState.FAILED,
+                    validation_error,
+                    {"error": "invalid_parameters"},
+                    round((time.monotonic() - started) * 1000, 1),
+                )
             )
         try:
             data = handler(arguments)
         except Exception as exc:
-            return ToolExecution(
-                name,
-                ToolState.FAILED,
-                f"L'outil a échoué ({type(exc).__name__}).",
-                {"error": type(exc).__name__},
-                round((time.monotonic() - started) * 1000, 1),
+            return self._finish(
+                ToolExecution(
+                    name,
+                    ToolState.FAILED,
+                    f"L'outil a échoué ({type(exc).__name__}).",
+                    {"error": type(exc).__name__},
+                    round((time.monotonic() - started) * 1000, 1),
+                )
             )
         state = self._state_from_payload(data)
         detail = str(data.get("detail") or data.get("reason") or "")
         if not detail:
             detail = "Résultat vérifié." if state is ToolState.SUCCESS else "Résultat incomplet."
-        return ToolExecution(
-            name,
-            state,
-            detail,
-            data,
-            round((time.monotonic() - started) * 1000, 1),
+        return self._finish(
+            ToolExecution(
+                name,
+                state,
+                detail,
+                data,
+                round((time.monotonic() - started) * 1000, 1),
+            )
         )
+
+    @staticmethod
+    def _finish(execution: ToolExecution) -> ToolExecution:
+        try:
+            local_metrics.record(
+                f"tool.{execution.tool}",
+                duration_ms=execution.duration_ms,
+                ok=execution.state in {ToolState.SUCCESS, ToolState.PARTIAL},
+                final_state=execution.state.value,
+            )
+        except Exception:
+            pass
+        return execution
 
     @staticmethod
     def _state_from_payload(data: dict[str, object]) -> ToolState:
