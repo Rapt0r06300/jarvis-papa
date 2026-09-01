@@ -39,7 +39,6 @@ Source: "..\dist\JarvisNativeHost.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\dist\JarvisDiagnostic.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\dist\jarvis-papa-thunderbird.xpi"; DestDir: "{app}\Thunderbird"; Flags: ignoreversion
 Source: "install_thunderbird_host.ps1"; DestDir: "{app}\tools"; Flags: ignoreversion
-Source: "..\.env.example"; DestDir: "{localappdata}\JarvisPapa"; DestName: ".env"; Flags: onlyifdoesntexist uninsneveruninstall
 Source: "jarvis.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
@@ -58,6 +57,6 @@ Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Fil
 
 [Messages]
 WelcomeLabel1=Installation de Jarvis
-WelcomeLabel2=Ce programme installe Jarvis comme une vraie application Windows. Aucun navigateur n'est nécessaire pour utiliser l'interface principale.%n%nL'installation prépare aussi le pont local Thunderbird.
+WelcomeLabel2=Ce programme installe Jarvis comme une vraie application Windows. Aucun navigateur ni fichier de configuration n'est nécessaire pour utiliser l'interface principale.%n%nL'installation prépare aussi le pont local Thunderbird.
 FinishedHeadingLabel=Jarvis est installé
 FinishedLabel=Jarvis est maintenant disponible depuis le Bureau et le menu Démarrer.
