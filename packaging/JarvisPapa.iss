@@ -1,7 +1,7 @@
 #define MyAppName "Jarvis Papa"
 #define MyAppVersion "0.6.0"
 #define MyAppPublisher "Jarvis Papa"
-#define MyAppExeName "Jarvis.exe"
+#define MyAppExeName "JarvisPapa.exe"
 
 [Setup]
 AppId={{A52CC652-46EA-4A07-B32D-5E27C538C7DA}
@@ -34,7 +34,7 @@ Name: "{localappdata}\JarvisPapa"
 Name: "{localappdata}\JarvisPapa\runtime"
 
 [Files]
-Source: "..\dist\Jarvis\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\dist\JarvisPapa\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\dist\JarvisNativeHost.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\dist\JarvisDiagnostic.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\dist\jarvis-papa-thunderbird.xpi"; DestDir: "{app}\Thunderbird"; Flags: ignoreversion
