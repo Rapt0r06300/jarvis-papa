@@ -1,5 +1,5 @@
-from jarvis_papa.diagnostics import run_cli
+from jarvis_papa.diagnostic_gui import run
 
 
 if __name__ == "__main__":
-    run_cli()
+    run()
