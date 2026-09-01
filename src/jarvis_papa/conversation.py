@@ -7,6 +7,7 @@ from dataclasses import asdict, dataclass, field
 from uuid import uuid4
 
 from jarvis_papa.agent import IntentRouter, jarvis_agent
+from jarvis_papa.metrics import local_metrics
 
 
 _ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{8,80}$")
@@ -125,17 +126,33 @@ class ConversationManager:
                 current.observations = current.observations[-self.MAX_OBSERVATIONS :]
                 current.cancelled_request_ids.discard(request_id)
 
-        return ConversationTurn(
+        duration_ms = round((time.monotonic() - started) * 1000, 1)
+        turn = ConversationTurn(
             request_id=request_id,
             conversation_id=session.id,
             answer=result.answer,
             route=result.route,
             model=result.model,
             tools=result.tools_used,
-            duration_ms=round((time.monotonic() - started) * 1000, 1),
+            duration_ms=duration_ms,
             retry_count=result.retry_count,
             final_state=result.final_state,
         )
+        local_metrics.record(
+            "conversation.turn",
+            duration_ms=duration_ms,
+            ok=result.ok,
+            final_state=result.final_state,
+            retry_count=result.retry_count,
+        )
+        local_metrics.record(
+            f"conversation.route.{result.route}",
+            duration_ms=duration_ms,
+            ok=result.ok,
+            final_state=result.final_state,
+            retry_count=result.retry_count,
+        )
+        return turn
 
     def cancel(self, conversation_id: str, request_id: str) -> bool:
         conversation_id = self._normalize_existing_id(conversation_id)
@@ -148,6 +165,7 @@ class ConversationManager:
                 return False
             session.cancelled_request_ids.add(request_id)
             session.updated_at = time.time()
+            local_metrics.record("conversation.cancel", ok=True, final_state="cancelled")
             return True
 
     def reset(self, conversation_id: str) -> bool:
