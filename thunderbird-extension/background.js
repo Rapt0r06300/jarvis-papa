@@ -168,6 +168,23 @@ async function sortNewsletters(items) {
   }
 }
 
+async function inspectAccounts() {
+  const accounts = await messenger.accounts.list();
+  let mailAccountCount = 0;
+  let folderAccessibleCount = 0;
+  for (const account of accounts || []) {
+    const type = String(account.type || "").toLowerCase();
+    if (type === "imap" || type === "pop3" || type === "pop") mailAccountCount += 1;
+    if (account.rootFolder) folderAccessibleCount += 1;
+  }
+  return {
+    verified: true,
+    account_count: Array.isArray(accounts) ? accounts.length : 0,
+    mail_account_count: mailAccountCount,
+    folder_accessible_count: folderAccessibleCount
+  };
+}
+
 function recipientText(value) {
   if (typeof value === "string") return value.trim();
   if (!value || typeof value !== "object") return String(value || "").trim();
@@ -233,6 +250,9 @@ async function handleCommand(command) {
     const tabId = Number(payload.compose_tab_id || 0);
     if (!Number.isInteger(tabId) || tabId <= 0) throw new Error("Brouillon Thunderbird introuvable");
     return (await composeSnapshot(tabId)).result;
+  }
+  if (command.kind === "inspect_accounts") {
+    return inspectAccounts();
   }
   if (command.kind === "send_reply") {
     const tabId = Number(payload.compose_tab_id || 0);
