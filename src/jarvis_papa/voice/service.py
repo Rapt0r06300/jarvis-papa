@@ -103,7 +103,6 @@ class WindowsAudioPlayer:
 
     def play(self, path: Path, duration_seconds: float) -> bool:
         if not self.available or not path.exists():
-            # Non-Windows test/development environments still get truthful voice events.
             time.sleep(min(0.02, max(0.0, duration_seconds)))
             return path.exists()
         encoded = base64.b64encode(str(path.resolve()).encode("utf-8")).decode("ascii")
@@ -289,6 +288,7 @@ class VoiceService:
         priority_value = self._PRIORITIES.get(priority.casefold(), self._PRIORITIES["normal"])
         first_result: VoiceResult | None = None
         errors: list[str] = []
+        enqueued = 0
         utterance_root = uuid.uuid4().hex
         for index, chunk in enumerate(chunks):
             result = self.synthesize(chunk, sensitive=sensitive)
@@ -306,12 +306,11 @@ class VoiceService:
                 priority=priority_value,
             )
             self._enqueue(item)
-        if first_result is None:
-            return VoiceResult(ok=False, errors=tuple(errors), sensitive=sensitive)
-        if not any(item[2].utterance_id.startswith(utterance_root) for item in self._queue_snapshot()):
+            enqueued += 1
+        if first_result is None or enqueued == 0:
             return VoiceResult(
                 ok=False,
-                errors=tuple(errors or first_result.errors),
+                errors=tuple(errors or (first_result.errors if first_result else ())),
                 sensitive=sensitive,
             )
         return VoiceResult(
@@ -392,10 +391,6 @@ class VoiceService:
                 event_type=event_type,
                 utterance_id=item.utterance_id,
             )
-
-    def _queue_snapshot(self) -> list[tuple[int, int, _PlaybackItem]]:
-        with self._condition:
-            return list(self._queue)
 
     @staticmethod
     def _split_text(text: str, limit: int = 280) -> list[str]:
