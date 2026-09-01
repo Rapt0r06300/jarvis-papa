@@ -1,4 +1,5 @@
 import json
+import os
 import struct
 import sys
 import threading
@@ -53,7 +54,7 @@ def _heartbeat() -> None:
     _api_request(
         "POST",
         "/api/thunderbird/bridge/heartbeat",
-        {"source": "native_host", "pid": None},
+        {"source": "native_host", "pid": os.getpid()},
     )
 
 
