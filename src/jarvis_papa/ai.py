@@ -178,7 +178,7 @@ class OllamaAI:
 
     @staticmethod
     def _sanitize_draft(text: str) -> str:
-        text = re.sub(r"```.*?```", "", text, flags=re.S)
+        text = re.sub(r"```.*?```", "", text, flags=re.DOTALL)
         text = text.replace("**", "").replace("__", "").strip()
         if not text or len(text) > 2500:
             return ""
