@@ -30,6 +30,7 @@ class VoiceResult:
     media_type: str | None = None
     duration_estimate_seconds: float = 0.0
     errors: tuple[str, ...] = ()
+    sensitive: bool = False
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -39,6 +40,7 @@ class VoiceResult:
             "media_type": self.media_type,
             "duration_estimate_seconds": self.duration_estimate_seconds,
             "errors": list(self.errors),
+            "sensitive": self.sensitive,
         }
 
 
@@ -114,13 +116,16 @@ class VoiceService:
         path.mkdir(parents=True, exist_ok=True)
         return path
 
-    def provider_order(self) -> tuple[str, ...]:
-        names = tuple(
-            item.strip().lower()
-            for item in settings.voice_provider_order.split(",")
-            if item.strip()
+    def provider_order(self, *, sensitive: bool = False) -> tuple[str, ...]:
+        configured = (
+            settings.voice_provider_order
+            if not sensitive or settings.voice_cloud_for_sensitive_content
+            else settings.voice_sensitive_provider_order
         )
-        return names or ("elevenlabs", "azure", "qwen3", "windows")
+        names = tuple(item.strip().lower() for item in configured.split(",") if item.strip())
+        if names:
+            return names
+        return ("qwen3", "windows") if sensitive else ("elevenlabs", "azure", "qwen3", "windows")
 
     def status(self) -> dict[str, object]:
         return {
@@ -128,6 +133,8 @@ class VoiceService:
             "language": "fr-FR",
             "persona": "jeune_femme_française_douce",
             "provider_order": list(self.provider_order()),
+            "sensitive_provider_order": list(self.provider_order(sensitive=True)),
+            "cloud_for_sensitive_content": settings.voice_cloud_for_sensitive_content,
             "providers": {
                 name: {"available": provider.available}
                 for name, provider in self.providers.items()
@@ -135,13 +142,13 @@ class VoiceService:
             "last_result": self._last_result.to_dict(),
         }
 
-    def synthesize(self, text: str) -> VoiceResult:
+    def synthesize(self, text: str, *, sensitive: bool = False) -> VoiceResult:
         cleaned = " ".join(text.split()).strip()
         if not cleaned:
-            return VoiceResult(ok=False, errors=("Texte vocal vide.",))
+            return VoiceResult(ok=False, errors=("Texte vocal vide.",), sensitive=sensitive)
         stem = self.output_dir / f"voice-{uuid.uuid4().hex}"
         errors: list[str] = []
-        for name in self.provider_order():
+        for name in self.provider_order(sensitive=sensitive):
             provider = self.providers.get(name)
             if provider is None:
                 errors.append(f"{name}: fournisseur inconnu")
@@ -162,19 +169,20 @@ class VoiceService:
                 media_type=artifact.media_type,
                 duration_estimate_seconds=duration,
                 errors=tuple(errors),
+                sensitive=sensitive,
             )
             with self._lock:
                 self._last_result = result
             self._cleanup_old_files()
             return result
 
-        result = VoiceResult(ok=False, errors=tuple(errors))
+        result = VoiceResult(ok=False, errors=tuple(errors), sensitive=sensitive)
         with self._lock:
             self._last_result = result
         return result
 
-    def speak(self, text: str) -> VoiceResult:
-        result = self.synthesize(text)
+    def speak(self, text: str, *, sensitive: bool = False) -> VoiceResult:
+        result = self.synthesize(text, sensitive=sensitive)
         if not result.ok or not result.file_name or not result.provider:
             return result
         path = self.output_dir / result.file_name
