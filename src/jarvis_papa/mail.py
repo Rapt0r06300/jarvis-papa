@@ -159,6 +159,9 @@ class MailAssistant:
                 "folder": mail.folder,
                 "search_terms": list(assessment.search_terms),
                 "action_required": assessment.action_required,
+                "author": mail.author,
+                "subject": mail.subject,
+                "body": mail.body[:8000],
             },
         )
 
