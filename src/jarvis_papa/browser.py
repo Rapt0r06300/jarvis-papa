@@ -73,7 +73,7 @@ class BrowserAgent:
                     if label and href:
                         links.append({"text": label[:180], "href": href[:1500]})
                 browser.close()
-        except Exception as exc:  # Playwright raises several platform-specific exception types.
+        except Exception as exc:  # noqa: BLE001 - Playwright exposes many runtime exception types.
             return BrowserResult(False, "read", url, str(exc))
 
         return BrowserResult(
@@ -115,7 +115,7 @@ class BrowserAgent:
                 output = destination / filename
                 download.save_as(str(output))
                 browser.close()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - Playwright exposes many runtime exception types.
             return BrowserResult(False, "download", url, str(exc))
 
         return BrowserResult(
