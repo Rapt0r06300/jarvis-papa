@@ -176,14 +176,10 @@ jobs:
             Write-Host "OK $file - $size bytes"
           }
 
-      - name: Upload Windows installer
+      - name: Upload single Windows installer
         uses: actions/upload-artifact@v4
         with:
-          name: JarvisPapa-Windows-0.6.0
-          path: |
-            installer-output/JarvisPapa-Setup.exe
-            dist/JarvisNativeHost.exe
-            dist/JarvisDiagnostic.exe
-            dist/jarvis-papa-thunderbird.xpi
+          name: JarvisPapa-Setup-0.6.0
+          path: installer-output/JarvisPapa-Setup.exe
           if-no-files-found: error
           retention-days: 30
