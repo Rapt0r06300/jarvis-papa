@@ -9,6 +9,7 @@ import jarvis_papa.mail_intelligence as mail_intelligence_module
 import jarvis_papa.routes as routes_module
 import jarvis_papa.tooling as tooling_module
 from jarvis_papa.advanced_routes import router as advanced_router
+from jarvis_papa.browser_workflow_routes import router as browser_workflow_router
 from jarvis_papa.conversation import conversation_manager
 from jarvis_papa.diagnostics import diagnostics
 from jarvis_papa.mail_intelligence import intelligent_mail_assistant
@@ -28,6 +29,7 @@ mail_intelligence_module.memory_store = semantic_memory_store
 
 app = routes_module.create_app()
 app.include_router(advanced_router)
+app.include_router(browser_workflow_router)
 voice_service.prewarm_async()
 
 
