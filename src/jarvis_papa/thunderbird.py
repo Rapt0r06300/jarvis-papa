@@ -7,7 +7,6 @@ from uuid import uuid4
 
 from jarvis_papa.config import settings
 
-
 _VERIFIED_MUTATION_KINDS = frozenset(
     {
         "prepare_reply",
