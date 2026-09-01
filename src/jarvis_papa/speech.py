@@ -59,16 +59,30 @@ class SmartSpeaker:
     def available(self) -> bool:
         status = voice_service.status()
         providers = status.get("providers", {})
-        return any(bool(item.get("available")) for item in providers.values())
+        return any(
+            isinstance(item, dict) and bool(item.get("available"))
+            for item in providers.values()
+        ) if isinstance(providers, dict) else False
 
     def speak_async(self, event: SpeechEvent) -> bool:
-        result = voice_service.speak(event.text, sensitive=event.sensitive)
+        priority = event.importance.value
+        if event.user_initiated and priority == SpeechImportance.NORMAL.value:
+            priority = SpeechImportance.HIGH.value
+        result = voice_service.speak(
+            event.text,
+            sensitive=event.sensitive,
+            priority=priority,
+        )
         if result.ok:
             return True
         # If sensitive local TTS is unavailable, do not leak the mail text to a cloud voice.
         # A generic, non-sensitive notification may still use the premium provider chain.
         if event.sensitive and event.privacy_fallback_text:
-            return voice_service.speak(event.privacy_fallback_text, sensitive=False).ok
+            return voice_service.speak(
+                event.privacy_fallback_text,
+                sensitive=False,
+                priority=priority,
+            ).ok
         return False
 
 
@@ -88,6 +102,9 @@ class SpeechCoordinator:
             if event.dedupe_key and spoken:
                 self._remember(event.dedupe_key)
         return decision, spoken
+
+    def stop(self) -> bool:
+        return voice_service.stop(clear_queue=True)
 
     def _is_recent_duplicate(self, key: str | None) -> bool:
         if not key:
