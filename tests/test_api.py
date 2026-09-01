@@ -19,7 +19,9 @@ def test_dashboard_is_available() -> None:
     assert "À faire maintenant" in response.text
     assert "Fais-moi le point" in response.text
     assert "Autorisation 1 sur 2" in response.text
-    assert "Autorisation 2 sur 2" in response.text
+    assert "Autorisation ${step} sur 2" in response.text
+    assert "Dernière vérification" in response.text
+    assert "Oui, je confirme" in response.text
     assert 'class="avatar"' in response.text
     assert "assistant-pane.speaking" in response.text
 
