@@ -156,6 +156,9 @@ class ThunderbirdCommandQueue:
             "subject",
             "duplicate",
             "verified",
+            "account_count",
+            "mail_account_count",
+            "folder_accessible_count",
         }
         clean: dict[str, object] = {}
         for key, value in result.items():
