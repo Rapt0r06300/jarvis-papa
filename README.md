@@ -1,69 +1,102 @@
 # Jarvis Papa
 
-Assistant personnel **local-first** pour Windows, conçu pour Robert afin de simplifier les tâches quotidiennes : mails, fichiers, agenda, rappels et assistance intelligente.
+Assistant personnel **local-first** pour Windows, conçu pour rendre les tâches quotidiennes très simples : mails Thunderbird, fichiers, navigation, contrôle Windows, mémoire et assistance intelligente.
 
-## Interaction de Robert
+## Interface
 
-Le PC de Robert n'a pas de microphone. Jarvis est donc conçu en **clics + clavier en entrée, voix en sortie**.
+Jarvis est pensé pour fonctionner **sans microphone** : Robert utilise surtout de gros boutons et quelques choix simples, tandis que Jarvis répond à voix haute quand c'est utile.
 
-Il n'existe pas de bouton « faire parler Jarvis ». La prise de parole est décidée automatiquement par le moteur vocal :
+L'écran principal reste volontairement léger :
 
-- une réponse à une demande directe de Robert est dite à voix haute ;
-- une information critique est dite à voix haute ;
-- une action nécessitant l'attention ou la confirmation de Robert est dite à voix haute ;
-- une information importante peut être annoncée spontanément ;
-- les informations de fond, les synchronisations et le bruit technique restent silencieux ;
-- les annonces répétitives sont temporairement dédupliquées pour éviter de déranger Robert.
+- un visage d'assistante féminine animé lorsqu'elle parle ;
+- au maximum quelques tâches importantes à la fois ;
+- un résumé très court de ce qu'il faut comprendre ;
+- de gros boutons simples ;
+- les newsletters non importantes restent discrètes ;
+- aucune interface technique n'est imposée à Robert.
 
-La synthèse vocale utilise les haut-parleurs de Windows et ne nécessite aucun microphone.
+## Voix intelligente
 
-## Principes
+Jarvis ne parle pas à chaque événement. Il parle notamment pour :
 
-- **Local-first** : les données personnelles restent locales autant que possible.
-- **Validation humaine** : toute action sensible (envoyer, supprimer, modifier) doit être confirmée avant exécution.
-- **Aucun secret dans GitHub** : clés API, mots de passe et jetons restent dans un fichier `.env` local ignoré par Git.
-- **Architecture modulaire** : mails, fichiers, voix et agenda sont ajoutés comme services indépendants.
-- **Traçabilité** : les actions importantes doivent pouvoir être journalisées et expliquées.
-- **Voix non intrusive** : Jarvis parle lorsque cela apporte une vraie valeur, pas à chaque événement.
+- résumer rapidement chaque mail important ;
+- répondre à une demande de Robert ;
+- signaler une information urgente ou une action nécessaire ;
+- expliquer précisément une confirmation.
 
-## V1
+Le moteur vocal essaie automatiquement :
 
-La première version contient :
+1. **ElevenLabs** pour la qualité maximale ;
+2. **Azure Speech** comme solution cloud fiable ;
+3. **Qwen3-TTS** pour une voix locale et hors ligne ;
+4. une voix Windows en dernier recours.
 
-1. un serveur local Jarvis ;
-2. une page d'accueil personnalisée pour Robert ;
-3. une politique de sécurité centralisée ;
-4. un moteur de décision vocale ;
-5. une sortie vocale Windows sans microphone ;
-6. des connecteurs futurs pour mails, fichiers et agenda.
+La cible est une voix de jeune femme française adulte, douce, chaleureuse, naturelle, très articulée et jamais volontairement robotique. Voir `docs/VOICE.md`.
 
-## Démarrage (Windows)
+## Mails Thunderbird
+
+Le pont Thunderbird permet notamment de :
+
+- détecter les nouveaux mails ;
+- identifier les messages importants ;
+- produire un résumé court à lire et à prononcer ;
+- garder les newsletters non importantes hors de la liste principale ;
+- ouvrir le mail d'origine ;
+- préparer une réponse ;
+- rechercher un document puis préparer un brouillon avec pièce jointe.
+
+Un brouillon préparé n'est **pas** un mail envoyé.
+
+## Fichiers, Windows et navigateur
+
+Jarvis possède des outils pour :
+
+- rechercher rapidement des fichiers, avec Everything si disponible ;
+- ouvrir un fichier ou un dossier ;
+- lancer des applications autorisées ;
+- inspecter les fenêtres et contrôles Windows avec UI Automation ;
+- lire des pages et effectuer certaines tâches web avec Playwright ;
+- mémoriser localement des préférences et habitudes utiles.
+
+## Sécurité : deux confirmations
+
+La règle est simple :
+
+- **lire, rechercher, résumer, inspecter ou ouvrir** ne nécessite pas deux autorisations ;
+- **modifier, envoyer, supprimer, déplacer, télécharger ou effectuer une autre action sensible** nécessite **deux confirmations explicites successives**.
+
+Une seule confirmation ne suffit jamais à autoriser une action sensible.
+
+## Confidentialité
+
+- Les données restent locales autant que possible.
+- Les clés API, mots de passe et jetons ne doivent jamais être ajoutés à GitHub.
+- Les clés ElevenLabs/Azure éventuelles sont placées uniquement dans le fichier `.env` local, déjà ignoré par Git.
+- Qwen3-TTS et Ollama permettent des fonctions locales sans clé cloud.
+
+## Installation Windows
 
 Prérequis : Python 3.12+.
 
-Le plus simple est d'exécuter une fois :
+Installation principale :
 
 ```text
 INSTALLER_JARVIS.bat
 ```
 
-Puis, pour lancer Jarvis :
+Voix locale Qwen3-TTS facultative :
+
+```text
+INSTALLER_VOIX_LOCALE.bat
+```
+
+Puis lancer :
 
 ```text
 LANCER_JARVIS.bat
 ```
 
-Démarrage manuel :
-
-```powershell
-py -3.12 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -e ".[dev]"
-copy .env.example .env
-jarvis-papa
-```
-
-Puis ouvrir `http://127.0.0.1:8765`.
+L'interface est disponible localement sur `http://127.0.0.1:8765`.
 
 ## Tests
 
@@ -71,12 +104,4 @@ Puis ouvrir `http://127.0.0.1:8765`.
 pytest
 ```
 
-## Sécurité
-
-Jarvis sépare les opérations en trois niveaux :
-
-- **READ** : consultation et recherche, exécutables sans confirmation supplémentaire ;
-- **WRITE** : modification locale, confirmation requise par défaut ;
-- **DESTRUCTIVE** : suppression, envoi externe ou action irréversible, confirmation explicite obligatoire.
-
-Le but est d'augmenter progressivement l'autonomie sans sacrifier le contrôle de Robert.
+La CI GitHub exécute également Ruff et les tests à chaque changement sur `main`.
