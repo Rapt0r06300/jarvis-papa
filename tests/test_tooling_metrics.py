@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import jarvis_papa.tooling as tooling
+from jarvis_papa import tooling
 from jarvis_papa.tooling import ToolRegistry, ToolRisk, ToolSpec, ToolState
 
 
