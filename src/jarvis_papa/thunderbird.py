@@ -8,6 +8,15 @@ from uuid import uuid4
 from jarvis_papa.config import settings
 
 
+_VERIFIED_MUTATION_KINDS = frozenset(
+    {
+        "prepare_reply",
+        "send_reply",
+        "sort_newsletters",
+    }
+)
+
+
 @dataclass(slots=True)
 class ThunderbirdCommand:
     id: str
@@ -109,13 +118,23 @@ class ThunderbirdCommandQueue:
         error: str | None = None,
         result: dict[str, object] | None = None,
     ) -> bool:
+        clean_result = self._safe_result(result or {})
+        target_status = "succeeded" if ok else "failed"
         with self._lock:
             for command in self._commands:
                 if command.id != command_id:
                     continue
-                command.status = "succeeded" if ok else "failed"
+                if command.status != "pending":
+                    return command.status == target_status
+                if (
+                    ok
+                    and command.kind in _VERIFIED_MUTATION_KINDS
+                    and clean_result.get("verified") is not True
+                ):
+                    return False
+                command.status = target_status
                 command.error = None if ok else (error or "Erreur Thunderbird non précisée.")[:1200]
-                command.result = self._safe_result(result or {})
+                command.result = clean_result
                 command.updated_at = time.time()
                 self._save_locked()
                 return True
