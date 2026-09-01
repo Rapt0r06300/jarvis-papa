@@ -31,7 +31,8 @@ class OllamaAI:
     def enabled(self) -> bool:
         return settings.ai_enabled and settings.ai_provider.lower() == "ollama"
 
-    def status(self) -> dict[str, object]:
+    def status(self, model: str | None = None) -> dict[str, object]:
+        selected = (model or settings.ollama_model).strip()
         if not self.enabled:
             return {"enabled": False, "available": False, "provider": settings.ai_provider}
         try:
@@ -46,7 +47,7 @@ class OllamaAI:
                 "enabled": True,
                 "available": False,
                 "provider": "ollama",
-                "model": settings.ollama_model,
+                "model": selected,
             }
 
         models = [item.get("name") for item in payload.get("models", []) if isinstance(item, dict)]
@@ -54,12 +55,12 @@ class OllamaAI:
             "enabled": True,
             "available": True,
             "provider": "ollama",
-            "model": settings.ollama_model,
-            "model_installed": settings.ollama_model in models,
+            "model": selected,
+            "model_installed": selected in models,
         }
 
-    def ready(self) -> bool:
-        state = self.status()
+    def ready(self, model: str | None = None) -> bool:
+        state = self.status(model)
         return bool(state.get("available")) and state.get("model_installed") is not False
 
     def chat(
@@ -68,12 +69,14 @@ class OllamaAI:
         *,
         tools: list[dict[str, Any]] | None = None,
         format_schema: dict[str, Any] | None = None,
+        model: str | None = None,
     ) -> AIResponse:
         if not self.enabled:
             raise AIUnavailable("Le moteur IA local est désactivé.")
 
+        selected = (model or settings.ollama_model).strip() or settings.ollama_model
         payload: dict[str, Any] = {
-            "model": settings.ollama_model,
+            "model": selected,
             "messages": messages,
             "stream": False,
             "options": {"temperature": settings.ai_temperature},
