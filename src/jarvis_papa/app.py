@@ -16,6 +16,7 @@ from jarvis_papa.mail_intelligence import intelligent_mail_assistant
 from jarvis_papa.memory_semantic import semantic_memory_store
 from jarvis_papa.speech import SpeechEvent, speech_coordinator
 from jarvis_papa.thunderbird import thunderbird_bridge_state
+from jarvis_papa.thunderbird_probe_routes import router as thunderbird_probe_router
 from jarvis_papa.voice import voice_service
 
 # Keep one protected memory implementation and one mail intelligence implementation
@@ -30,6 +31,7 @@ mail_intelligence_module.memory_store = semantic_memory_store
 app = routes_module.create_app()
 app.include_router(advanced_router)
 app.include_router(browser_workflow_router)
+app.include_router(thunderbird_probe_router)
 voice_service.prewarm_async()
 
 
