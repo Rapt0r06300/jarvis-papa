@@ -226,7 +226,7 @@ class BrowserWorkflow:
         clean: list[dict[str, object]] = []
         for raw in steps:
             if not isinstance(raw, dict):
-                raise ValueError("Étape Web invalide.")
+                raise TypeError("Étape Web invalide.")
             action = str(raw.get("action") or "").strip().casefold()
             if action not in _ALLOWED_STEPS:
                 raise ValueError(f"Étape Web non autorisée : {action or 'vide'}")
