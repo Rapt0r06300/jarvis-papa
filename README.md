@@ -1,6 +1,21 @@
 # Jarvis Papa
 
-Assistant personnel **local-first** pour Windows, conçu pour simplifier les tâches quotidiennes : mails, fichiers, agenda, rappels et interaction vocale.
+Assistant personnel **local-first** pour Windows, conçu pour Robert afin de simplifier les tâches quotidiennes : mails, fichiers, agenda, rappels et assistance intelligente.
+
+## Interaction de Robert
+
+Le PC de Robert n'a pas de microphone. Jarvis est donc conçu en **clics + clavier en entrée, voix en sortie**.
+
+Il n'existe pas de bouton « faire parler Jarvis ». La prise de parole est décidée automatiquement par le moteur vocal :
+
+- une réponse à une demande directe de Robert est dite à voix haute ;
+- une information critique est dite à voix haute ;
+- une action nécessitant l'attention ou la confirmation de Robert est dite à voix haute ;
+- une information importante peut être annoncée spontanément ;
+- les informations de fond, les synchronisations et le bruit technique restent silencieux ;
+- les annonces répétitives sont temporairement dédupliquées pour éviter de déranger Robert.
+
+La synthèse vocale utilise les haut-parleurs de Windows et ne nécessite aucun microphone.
 
 ## Principes
 
@@ -9,20 +24,36 @@ Assistant personnel **local-first** pour Windows, conçu pour simplifier les tâ
 - **Aucun secret dans GitHub** : clés API, mots de passe et jetons restent dans un fichier `.env` local ignoré par Git.
 - **Architecture modulaire** : mails, fichiers, voix et agenda sont ajoutés comme services indépendants.
 - **Traçabilité** : les actions importantes doivent pouvoir être journalisées et expliquées.
+- **Voix non intrusive** : Jarvis parle lorsque cela apporte une vraie valeur, pas à chaque événement.
 
 ## V1
 
-La première version vise :
+La première version contient :
 
 1. un serveur local Jarvis ;
-2. une page d’accueil simple ;
-3. un moteur de commandes ;
-4. une politique de sécurité centralisée ;
-5. des connecteurs futurs pour mails, fichiers, agenda et voix.
+2. une page d'accueil personnalisée pour Robert ;
+3. une politique de sécurité centralisée ;
+4. un moteur de décision vocale ;
+5. une sortie vocale Windows sans microphone ;
+6. des connecteurs futurs pour mails, fichiers et agenda.
 
 ## Démarrage (Windows)
 
 Prérequis : Python 3.12+.
+
+Le plus simple est d'exécuter une fois :
+
+```text
+INSTALLER_JARVIS.bat
+```
+
+Puis, pour lancer Jarvis :
+
+```text
+LANCER_JARVIS.bat
+```
+
+Démarrage manuel :
 
 ```powershell
 py -3.12 -m venv .venv
@@ -48,4 +79,4 @@ Jarvis sépare les opérations en trois niveaux :
 - **WRITE** : modification locale, confirmation requise par défaut ;
 - **DESTRUCTIVE** : suppression, envoi externe ou action irréversible, confirmation explicite obligatoire.
 
-Le but est d'augmenter progressivement l'autonomie sans sacrifier le contrôle de l'utilisateur.
+Le but est d'augmenter progressivement l'autonomie sans sacrifier le contrôle de Robert.
