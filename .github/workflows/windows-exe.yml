@@ -35,11 +35,11 @@ jobs:
       - name: Generate Windows icon
         run: python packaging/generate_icon.py
 
-      - name: Build native Jarvis desktop application
+      - name: Build native Jarvis Papa desktop application
         shell: pwsh
         run: |
           pyinstaller --noconfirm --clean --onedir --windowed `
-            --name Jarvis `
+            --name JarvisPapa `
             --icon packaging/jarvis.ico `
             --version-file packaging/version_info.txt `
             --paths src `
@@ -66,21 +66,21 @@ jobs:
             --paths src `
             packaging/diagnostic_entry.py
 
-      - name: Smoke test packaged Jarvis.exe
+      - name: Smoke test packaged JarvisPapa.exe
         shell: pwsh
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
-          $qwenWorker = "dist\Jarvis\_internal\jarvis_papa\voice\qwen_worker.py"
-          if (-not (Test-Path $qwenWorker)) { throw "Qwen worker is missing from Jarvis bundle" }
-          $version = (Get-Item "dist\Jarvis\Jarvis.exe").VersionInfo.ProductVersion
-          if (-not $version.StartsWith("0.6.0")) { throw "Jarvis.exe metadata version is invalid: $version" }
-          $process = Start-Process -FilePath "dist\Jarvis\Jarvis.exe" -PassThru
+          $qwenWorker = "dist\JarvisPapa\_internal\jarvis_papa\voice\qwen_worker.py"
+          if (-not (Test-Path $qwenWorker)) { throw "Qwen worker is missing from Jarvis Papa bundle" }
+          $version = (Get-Item "dist\JarvisPapa\JarvisPapa.exe").VersionInfo.ProductVersion
+          if (-not $version.StartsWith("0.6.0")) { throw "JarvisPapa.exe metadata version is invalid: $version" }
+          $process = Start-Process -FilePath "dist\JarvisPapa\JarvisPapa.exe" -PassThru
           $healthy = $false
           try {
             for ($i = 0; $i -lt 60; $i++) {
               if ($process.HasExited) {
-                throw "Jarvis.exe exited unexpectedly with code $($process.ExitCode)"
+                throw "JarvisPapa.exe exited unexpectedly with code $($process.ExitCode)"
               }
               try {
                 $health = Invoke-RestMethod -Uri "http://127.0.0.1:8765/health" -TimeoutSec 1
@@ -94,7 +94,7 @@ jobs:
                 Start-Sleep -Milliseconds 500
               }
             }
-            if (-not $healthy) { throw "Jarvis.exe did not expose its local service in time" }
+            if (-not $healthy) { throw "JarvisPapa.exe did not expose its local service in time" }
           } finally {
             if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force }
           }
@@ -131,8 +131,8 @@ jobs:
             "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/DIR=$installDir"
           ) -Wait -PassThru
           if ($installer.ExitCode -ne 0) { throw "Installer failed with code $($installer.ExitCode)" }
-          $installedExe = Join-Path $installDir "Jarvis.exe"
-          if (-not (Test-Path $installedExe)) { throw "Installed Jarvis.exe is missing" }
+          $installedExe = Join-Path $installDir "JarvisPapa.exe"
+          if (-not (Test-Path $installedExe)) { throw "Installed JarvisPapa.exe is missing" }
           $installedQwenWorker = Join-Path $installDir "_internal\jarvis_papa\voice\qwen_worker.py"
           if (-not (Test-Path $installedQwenWorker)) { throw "Installed Qwen worker is missing" }
 
@@ -140,7 +140,7 @@ jobs:
           $healthy = $false
           try {
             for ($i = 0; $i -lt 60; $i++) {
-              if ($process.HasExited) { throw "Installed Jarvis.exe exited unexpectedly" }
+              if ($process.HasExited) { throw "Installed JarvisPapa.exe exited unexpectedly" }
               try {
                 $health = Invoke-RestMethod -Uri "http://127.0.0.1:8765/health" -TimeoutSec 1
                 if ($health.status -eq "ok") { $healthy = $true; break }
@@ -148,7 +148,7 @@ jobs:
                 Start-Sleep -Milliseconds 500
               }
             }
-            if (-not $healthy) { throw "Installed Jarvis.exe never became healthy" }
+            if (-not $healthy) { throw "Installed JarvisPapa.exe never became healthy" }
           } finally {
             if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force }
           }
@@ -164,7 +164,7 @@ jobs:
         shell: pwsh
         run: |
           $files = @(
-            "dist\Jarvis\Jarvis.exe",
+            "dist\JarvisPapa\JarvisPapa.exe",
             "dist\JarvisNativeHost.exe",
             "dist\JarvisDiagnostic.exe",
             "installer-output\JarvisPapa-Setup.exe"
