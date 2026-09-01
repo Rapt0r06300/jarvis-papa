@@ -3,7 +3,6 @@ from __future__ import annotations
 import re
 import sys
 from dataclasses import asdict, dataclass
-from pathlib import Path
 
 from jarvis_papa.browser import BrowserAgent
 from jarvis_papa.config import settings
@@ -34,7 +33,7 @@ class BrowserWorkflow:
 
     def inspect(self, raw_url: str) -> dict[str, object]:
         try:
-            url = self._guard._validate_public_url(raw_url)  # noqa: SLF001 - shared SSRF guard.
+            url = self._guard._validate_public_url(raw_url)
         except ValueError as exc:
             return {"ok": False, "state": "failed", "detail": str(exc)}
         if not self._guard.available:
@@ -44,9 +43,9 @@ class BrowserWorkflow:
             from playwright.sync_api import sync_playwright
 
             with sync_playwright() as playwright:
-                browser = self._guard._launch_browser(playwright)  # noqa: SLF001
+                browser = self._guard._launch_browser(playwright)
                 context = browser.new_context()
-                context.route("**/*", self._guard._route_request)  # noqa: SLF001
+                context.route("**/*", self._guard._route_request)
                 page = context.new_page()
                 page.goto(
                     url,
@@ -55,9 +54,17 @@ class BrowserWorkflow:
                 )
                 fields: list[BrowserFormField] = []
                 for element in page.locator("input, textarea, select").all()[:50]:
-                    field_type = (element.get_attribute("type") or element.evaluate("el => el.tagName.toLowerCase()") or "text").lower()
+                    field_type = (
+                        element.get_attribute("type")
+                        or element.evaluate("el => el.tagName.toLowerCase()")
+                        or "text"
+                    ).lower()
                     name = element.get_attribute("name") or element.get_attribute("id") or ""
-                    label = element.get_attribute("aria-label") or element.get_attribute("placeholder") or name
+                    label = (
+                        element.get_attribute("aria-label")
+                        or element.get_attribute("placeholder")
+                        or name
+                    )
                     fields.append(
                         BrowserFormField(
                             name=name[:180],
@@ -68,11 +75,17 @@ class BrowserWorkflow:
                         )
                     )
                 buttons = []
-                for element in page.locator("button, input[type=submit], input[type=button]").all()[:40]:
-                    text = (element.inner_text(timeout=800) or element.get_attribute("value") or "").strip()
+                for element in page.locator(
+                    "button, input[type=submit], input[type=button]"
+                ).all()[:40]:
+                    text = (
+                        element.inner_text(timeout=800)
+                        or element.get_attribute("value")
+                        or ""
+                    ).strip()
                     if text:
                         buttons.append(text[:180])
-                final_url = self._guard._validate_public_url(page.url)  # noqa: SLF001
+                final_url = self._guard._validate_public_url(page.url)
                 title = page.title()[:300]
                 browser.close()
         except (PlaywrightError, ValueError, OSError) as exc:
@@ -97,7 +110,7 @@ class BrowserWorkflow:
         session_name: str = "default",
     ) -> dict[str, object]:
         try:
-            url = self._guard._validate_public_url(raw_url)  # noqa: SLF001
+            url = self._guard._validate_public_url(raw_url)
         except ValueError as exc:
             return {"ok": False, "state": "failed", "detail": str(exc)}
         if not self._guard.available:
@@ -108,7 +121,10 @@ class BrowserWorkflow:
                 return {
                     "ok": False,
                     "state": "failed",
-                    "detail": "Jarvis refuse de saisir automatiquement un mot de passe ou une donnée financière sensible.",
+                    "detail": (
+                        "Jarvis refuse de saisir automatiquement un mot de passe "
+                        "ou une donnée financière sensible."
+                    ),
                 }
         if not button_text.strip():
             return {"ok": False, "state": "failed", "detail": "Bouton cible manquant."}
@@ -124,11 +140,15 @@ class BrowserWorkflow:
                 if sys.platform == "win32":
                     launch_args["channel"] = "msedge"
                 try:
-                    context = playwright.chromium.launch_persistent_context(str(profile), **launch_args)
+                    context = playwright.chromium.launch_persistent_context(
+                        str(profile), **launch_args
+                    )
                 except PlaywrightError:
                     launch_args.pop("channel", None)
-                    context = playwright.chromium.launch_persistent_context(str(profile), **launch_args)
-                context.route("**/*", self._guard._route_request)  # noqa: SLF001
+                    context = playwright.chromium.launch_persistent_context(
+                        str(profile), **launch_args
+                    )
+                context.route("**/*", self._guard._route_request)
                 page = context.pages[0] if context.pages else context.new_page()
                 page.on("dialog", lambda dialog: dialog.dismiss())
                 page.goto(
@@ -154,7 +174,7 @@ class BrowserWorkflow:
                     page.wait_for_load_state("domcontentloaded", timeout=5000)
                 except PlaywrightError:
                     pass
-                final_url = self._guard._validate_public_url(page.url)  # noqa: SLF001
+                final_url = self._guard._validate_public_url(page.url)
                 title = page.title()[:300]
                 body = page.locator("body").inner_text(timeout=5000)[:12000]
                 context.close()
@@ -171,7 +191,10 @@ class BrowserWorkflow:
             "detail": (
                 "Le résultat demandé a été vérifié sur la page."
                 if verified
-                else "L'interaction a été effectuée, mais aucun critère suffisant ne permet d'affirmer que l'action métier a réussi."
+                else (
+                    "L'interaction a été effectuée, mais aucun critère suffisant ne permet "
+                    "d'affirmer que l'action métier a réussi."
+                )
             ),
         }
 
