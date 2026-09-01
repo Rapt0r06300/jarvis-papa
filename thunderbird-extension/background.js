@@ -86,6 +86,25 @@ async function resolveMessageId(payload) {
   throw new Error("Message Thunderbird introuvable");
 }
 
+async function addLocalAttachments(tabId, attachments) {
+  for (const attachment of attachments || []) {
+    const response = await fetch(attachment.url, {cache: "no-store"});
+    if (!response.ok) {
+      throw new Error(`Pièce jointe Jarvis inaccessible: ${attachment.name || "fichier"}`);
+    }
+    const data = await response.arrayBuffer();
+    const file = new File(
+      [data],
+      attachment.name || "document",
+      {type: attachment.media_type || "application/octet-stream"}
+    );
+    await messenger.compose.addAttachment(tabId, {
+      file,
+      name: attachment.name || file.name
+    });
+  }
+}
+
 async function handleCommand(command) {
   const payload = command.payload || {};
 
@@ -101,9 +120,10 @@ async function handleCommand(command) {
 
   if (command.kind === "prepare_reply") {
     const messageId = await resolveMessageId(payload);
-    await messenger.compose.beginReply(messageId, "replyToSender", {
+    const tab = await messenger.compose.beginReply(messageId, "replyToSender", {
       plainTextBody: payload.body || ""
     });
+    await addLocalAttachments(tab.id, payload.attachments || []);
     return;
   }
 
