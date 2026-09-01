@@ -47,6 +47,10 @@ class Settings(BaseSettings):
     qwen3_tts_speaker: str = "Serena"
     qwen3_tts_device: str = "cuda:0"
     qwen3_tts_timeout_seconds: float = 180.0
+    qwen3_tts_worker_port: int = 8766
+    qwen3_tts_startup_timeout_seconds: float = 180.0
+    qwen3_tts_idle_timeout_seconds: int = 900
+    qwen3_tts_prewarm: bool = True
     qwen3_tts_instruction: str = (
         "Jeune femme française adulte, voix douce, chaleureuse, naturelle et rassurante. "
         "Français de France impeccable, articulation très claire, débit calme et vivant, "
