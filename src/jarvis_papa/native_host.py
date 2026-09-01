@@ -2,9 +2,9 @@ import json
 import struct
 import sys
 import threading
-from typing import Any
 import urllib.error
 import urllib.request
+from typing import Any
 
 from jarvis_papa.config import settings
 
