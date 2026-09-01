@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import ClassVar
 from urllib.parse import quote_plus
 
+from jarvis_papa.files import is_allowed_document, is_allowed_path
+
 
 @dataclass(frozen=True, slots=True)
 class DesktopResult:
@@ -33,16 +35,30 @@ class DesktopController:
         return platform.system() == "Windows"
 
     def open_path(self, raw_path: str) -> DesktopResult:
-        path = Path(raw_path).expanduser().resolve()
+        try:
+            path = Path(raw_path).expanduser().resolve()
+        except OSError:
+            return DesktopResult(False, "open_path", raw_path, "Chemin invalide.")
         if not path.exists():
             return DesktopResult(False, "open_path", str(path), "Fichier ou dossier introuvable.")
+        if path.is_dir():
+            allowed = is_allowed_path(path)
+        else:
+            allowed = is_allowed_document(path)
+        if not allowed:
+            return DesktopResult(
+                False,
+                "open_path",
+                str(path),
+                "Jarvis refuse d'ouvrir ce chemin car il sort des dossiers ou types de documents autorisés.",
+            )
         if not self.is_windows:
             return DesktopResult(False, "open_path", str(path), "Action disponible sur Windows.")
         try:
             os.startfile(str(path))  # type: ignore[attr-defined]
         except OSError as exc:
             return DesktopResult(False, "open_path", str(path), str(exc))
-        return DesktopResult(True, "open_path", str(path), "Ouverture demandée à Windows.")
+        return DesktopResult(True, "open_path", str(path), "Document ouvert dans Windows.")
 
     def start_app(self, alias: str) -> DesktopResult:
         normalized = alias.strip().lower()
@@ -67,7 +83,7 @@ class DesktopController:
         return DesktopResult(True, "start_app", alias, "Application lancée.")
 
     def search_web(self, query: str) -> DesktopResult:
-        query = query.strip()
+        query = " ".join(query.split()).strip()
         if not query:
             return DesktopResult(False, "web_search", query, "Recherche vide.")
         url = f"https://www.google.com/search?q={quote_plus(query)}"
