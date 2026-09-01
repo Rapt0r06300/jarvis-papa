@@ -127,7 +127,26 @@ class VoiceService:
             return names
         return ("qwen3", "windows") if sensitive else ("elevenlabs", "azure", "qwen3", "windows")
 
+    def prewarm_async(self) -> bool:
+        provider = self.providers.get("qwen3")
+        if not isinstance(provider, Qwen3TTSProvider):
+            return False
+        return provider.warm_async()
+
+    def shutdown(self) -> None:
+        provider = self.providers.get("qwen3")
+        if isinstance(provider, Qwen3TTSProvider):
+            provider.shutdown()
+
     def status(self) -> dict[str, object]:
+        provider_states: dict[str, dict[str, object]] = {}
+        for name, provider in self.providers.items():
+            state_method = getattr(provider, "status", None)
+            if callable(state_method):
+                state = state_method()
+                provider_states[name] = dict(state) if isinstance(state, dict) else {"available": provider.available}
+            else:
+                provider_states[name] = {"available": provider.available}
         return {
             "enabled": settings.speech_enabled,
             "language": "fr-FR",
@@ -135,10 +154,8 @@ class VoiceService:
             "provider_order": list(self.provider_order()),
             "sensitive_provider_order": list(self.provider_order(sensitive=True)),
             "cloud_for_sensitive_content": settings.voice_cloud_for_sensitive_content,
-            "providers": {
-                name: {"available": provider.available}
-                for name, provider in self.providers.items()
-            },
+            "prewarm_enabled": settings.qwen3_tts_prewarm,
+            "providers": provider_states,
             "last_result": self._last_result.to_dict(),
         }
 
