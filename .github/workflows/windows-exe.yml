@@ -7,6 +7,7 @@ on:
     paths:
       - "src/**"
       - "packaging/**"
+      - "scripts/**"
       - "thunderbird-extension/**"
       - "pyproject.toml"
       - ".env.example"
@@ -18,7 +19,7 @@ permissions:
 jobs:
   build-windows-exe:
     runs-on: windows-latest
-    timeout-minutes: 40
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -66,6 +67,46 @@ jobs:
             --paths src `
             packaging/diagnostic_entry.py
 
+      - name: Sign application executables when certificate is configured
+        id: sign_apps
+        shell: pwsh
+        env:
+          WINDOWS_SIGNING_PFX_BASE64: ${{ secrets.WINDOWS_SIGNING_PFX_BASE64 }}
+          WINDOWS_SIGNING_PASSWORD: ${{ secrets.WINDOWS_SIGNING_PASSWORD }}
+        run: |
+          $configured = -not [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_PFX_BASE64) -and `
+            -not [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_PASSWORD)
+          if (-not $configured) {
+            "status=UNSIGNED" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            Write-Host "Authenticode certificate secrets are not configured; build remains explicitly unsigned."
+            exit 0
+          }
+
+          $pfx = Join-Path $env:RUNNER_TEMP "jarvis-signing.pfx"
+          [IO.File]::WriteAllBytes(
+            $pfx,
+            [Convert]::FromBase64String($env:WINDOWS_SIGNING_PFX_BASE64)
+          )
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" `
+            -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match '\\x64\\signtool\.exe$' } |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1
+          if (-not $signtool) { throw "signtool.exe x64 was not found on the Windows runner" }
+
+          $targets = @(
+            "dist\JarvisPapa\JarvisPapa.exe",
+            "dist\JarvisNativeHost.exe",
+            "dist\JarvisDiagnostic.exe"
+          )
+          foreach ($target in $targets) {
+            & $signtool.FullName sign /fd SHA256 /td SHA256 `
+              /tr "http://timestamp.digicert.com" `
+              /f $pfx /p $env:WINDOWS_SIGNING_PASSWORD $target
+            if ($LASTEXITCODE -ne 0) { throw "Authenticode signing failed for $target" }
+          }
+          "status=SIGNED" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
       - name: Smoke test graphical diagnostic
         shell: pwsh
         env:
@@ -103,6 +144,15 @@ jobs:
                 if ($health.status -eq "ok") {
                   $status = Invoke-RestMethod -Uri "http://127.0.0.1:8765/api/status" -TimeoutSec 2
                   if ($status.version -ne "0.6.0") { throw "Unexpected Jarvis version: $($status.version)" }
+                  $quality = Invoke-RestMethod -Uri "http://127.0.0.1:8765/api/advanced/voice/quality" -TimeoutSec 2
+                  if (-not ($quality.PSObject.Properties.Name -contains "premium_ready")) {
+                    throw "Voice quality endpoint is missing its readiness contract"
+                  }
+                  $openapi = Invoke-RestMethod -Uri "http://127.0.0.1:8765/openapi.json" -TimeoutSec 2
+                  $paths = @($openapi.paths.PSObject.Properties.Name)
+                  if ($paths -notcontains "/api/advanced/browser/workflow") {
+                    throw "Multi-step browser workflow route is missing from packaged app"
+                  }
                   $healthy = $true
                   break
                 }
@@ -124,6 +174,21 @@ jobs:
           Compress-Archive -Path "thunderbird-extension/*" -DestinationPath $zip -Force
           Move-Item $zip $xpi -Force
 
+      - name: Validate final-PC diagnostic script syntax
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path "scripts\validate_final_pc.ps1"),
+            [ref]$tokens,
+            [ref]$errors
+          ) | Out-Null
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Error $_.Message }
+            throw "Final-PC validation script contains PowerShell syntax errors"
+          }
+
       - name: Install Inno Setup
         shell: pwsh
         run: choco install innosetup --no-progress -y
@@ -134,6 +199,32 @@ jobs:
           $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
           if (-not (Test-Path $iscc)) { throw "Inno Setup compiler not found" }
           & $iscc "packaging\JarvisPapa.iss"
+
+      - name: Sign installer when certificate is configured
+        id: sign_installer
+        shell: pwsh
+        env:
+          WINDOWS_SIGNING_PASSWORD: ${{ secrets.WINDOWS_SIGNING_PASSWORD }}
+        run: |
+          if ("${{ steps.sign_apps.outputs.status }}" -ne "SIGNED") {
+            "status=UNSIGNED" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            exit 0
+          }
+          $pfx = Join-Path $env:RUNNER_TEMP "jarvis-signing.pfx"
+          if (-not (Test-Path $pfx)) { throw "Temporary signing certificate is missing" }
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" `
+            -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match '\\x64\\signtool\.exe$' } |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1
+          if (-not $signtool) { throw "signtool.exe x64 was not found on the Windows runner" }
+          & $signtool.FullName sign /fd SHA256 /td SHA256 `
+            /tr "http://timestamp.digicert.com" `
+            /f $pfx /p $env:WINDOWS_SIGNING_PASSWORD `
+            "installer-output\JarvisPapa-Setup.exe"
+          if ($LASTEXITCODE -ne 0) { throw "Authenticode signing failed for installer" }
+          Remove-Item $pfx -Force -ErrorAction SilentlyContinue
+          "status=SIGNED" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
       - name: Clean Windows install uninstall reinstall E2E
         shell: pwsh
@@ -168,7 +259,15 @@ jobs:
                 if ($process.HasExited) { throw "Installed JarvisPapa.exe exited unexpectedly" }
                 try {
                   $health = Invoke-RestMethod -Uri "http://127.0.0.1:8765/health" -TimeoutSec 1
-                  if ($health.status -eq "ok") { $healthy = $true; break }
+                  if ($health.status -eq "ok") {
+                    $openapi = Invoke-RestMethod -Uri "http://127.0.0.1:8765/openapi.json" -TimeoutSec 2
+                    $paths = @($openapi.paths.PSObject.Properties.Name)
+                    if ($paths -notcontains "/api/advanced/browser/workflow") {
+                      throw "Installed Jarvis is missing advanced browser workflow route"
+                    }
+                    $healthy = $true
+                    break
+                  }
                 } catch {
                   Start-Sleep -Milliseconds 500
                 }
@@ -200,7 +299,7 @@ jobs:
           Assert-JarvisHealthy $secondExe
           Uninstall-Jarvis
 
-      - name: Verify Windows deliverables and create checksum
+      - name: Verify Authenticode status and Windows deliverables
         shell: pwsh
         run: |
           $files = @(
@@ -209,15 +308,36 @@ jobs:
             "dist\JarvisDiagnostic.exe",
             "installer-output\JarvisPapa-Setup.exe"
           )
+          $signingExpected = "${{ steps.sign_apps.outputs.status }}" -eq "SIGNED"
+          $statusLines = @()
           foreach ($file in $files) {
             if (-not (Test-Path $file)) { throw "Missing deliverable: $file" }
             $size = (Get-Item $file).Length
             if ($size -lt 100000) { throw "Deliverable looks invalid: $file ($size bytes)" }
-            Write-Host "OK $file - $size bytes"
+            $signature = Get-AuthenticodeSignature -FilePath $file
+            $statusLines += "$file`t$($signature.Status)`t$($signature.SignerCertificate.Subject)"
+            if ($signingExpected -and $signature.Status -ne "Valid") {
+              throw "Expected a valid Authenticode signature for $file, got $($signature.Status)"
+            }
+            Write-Host "OK $file - $size bytes - signature $($signature.Status)"
           }
-          $hash = (Get-FileHash "installer-output\JarvisPapa-Setup.exe" -Algorithm SHA256).Hash.ToLowerInvariant()
-          "$hash  JarvisPapa-Setup.exe" | Set-Content "installer-output\JarvisPapa-Setup.exe.sha256" -Encoding ascii
-          Write-Host "SHA256 $hash"
+          if ($signingExpected -and "${{ steps.sign_installer.outputs.status }}" -ne "SIGNED") {
+            throw "Application binaries were signed but installer was not signed"
+          }
+          $headline = if ($signingExpected) { "SIGNED" } else { "UNSIGNED_CERTIFICATE_NOT_CONFIGURED" }
+          @($headline) + $statusLines |
+            Set-Content "installer-output\signing-status.txt" -Encoding utf8
+
+          $manifest = @()
+          foreach ($file in $files) {
+            $hash = (Get-FileHash $file -Algorithm SHA256).Hash.ToLowerInvariant()
+            $manifest += "$hash  $file"
+          }
+          $manifest | Set-Content "installer-output\deliverables.sha256" -Encoding ascii
+          $setupHash = (Get-FileHash "installer-output\JarvisPapa-Setup.exe" -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$setupHash  JarvisPapa-Setup.exe" |
+            Set-Content "installer-output\JarvisPapa-Setup.exe.sha256" -Encoding ascii
+          Write-Host "Installer SHA256 $setupHash"
 
       - name: Upload final Windows installer
         uses: actions/upload-artifact@v4
@@ -226,5 +346,7 @@ jobs:
           path: |
             installer-output/JarvisPapa-Setup.exe
             installer-output/JarvisPapa-Setup.exe.sha256
+            installer-output/deliverables.sha256
+            installer-output/signing-status.txt
           if-no-files-found: error
           retention-days: 30
