@@ -22,7 +22,11 @@ def _prepare_windowed_runtime() -> None:
 
 _prepare_windowed_runtime()
 
+from jarvis_papa.desktop_api_auth import install_desktop_api_auth
 from jarvis_papa.onboarding import run_first_launch_onboarding
+
+install_desktop_api_auth()
+
 from jarvis_papa.professional_desktop_plus import run
 
 
