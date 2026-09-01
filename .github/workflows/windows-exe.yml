@@ -62,6 +62,35 @@ jobs:
             --paths src `
             packaging/diagnostic_entry.py
 
+      - name: Smoke test packaged Jarvis.exe
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          $process = Start-Process -FilePath "dist\Jarvis\Jarvis.exe" -PassThru
+          $healthy = $false
+          try {
+            for ($i = 0; $i -lt 60; $i++) {
+              if ($process.HasExited) {
+                throw "Jarvis.exe exited unexpectedly with code $($process.ExitCode)"
+              }
+              try {
+                $health = Invoke-RestMethod -Uri "http://127.0.0.1:8765/health" -TimeoutSec 1
+                if ($health.status -eq "ok") {
+                  $status = Invoke-RestMethod -Uri "http://127.0.0.1:8765/api/status" -TimeoutSec 2
+                  if ($status.version -ne "0.6.0") { throw "Unexpected Jarvis version: $($status.version)" }
+                  $healthy = $true
+                  break
+                }
+              } catch {
+                Start-Sleep -Milliseconds 500
+              }
+            }
+            if (-not $healthy) { throw "Jarvis.exe did not expose its local service in time" }
+          } finally {
+            if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force }
+          }
+
       - name: Package Thunderbird extension
         shell: pwsh
         run: |
