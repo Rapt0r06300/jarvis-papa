@@ -29,7 +29,7 @@ build = [
 ]
 
 [project.scripts]
-jarvis-papa = "jarvis_papa.professional_desktop:run"
+jarvis-papa = "jarvis_papa.professional_desktop_plus:run"
 jarvis-papa-server = "jarvis_papa.main:run"
 jarvis-native-host = "jarvis_papa.native_host:run"
 jarvis-diagnostic = "jarvis_papa.diagnostics:run_cli"
