@@ -48,6 +48,7 @@ target-version = "py312"
 [tool.ruff.lint.per-file-ignores]
 "src/jarvis_papa/app.py" = ["F401"]
 "src/jarvis_papa/agent.py" = ["UP035"]
+"src/jarvis_papa/conversation.py" = ["I001"]
 "src/jarvis_papa/dashboard.py" = ["I001"]
 "src/jarvis_papa/desktop_app.py" = ["BLE001", "RUF100", "UP035"]
 "src/jarvis_papa/professional_desktop.py" = ["BLE001", "I001", "UP035"]
