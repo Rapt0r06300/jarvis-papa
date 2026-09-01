@@ -6,7 +6,6 @@ from urllib.parse import urlparse
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-
 _ALLOWED_HOSTS = {"127.0.0.1", "localhost", "::1", "testserver"}
 _ALLOWED_TEST_CLIENTS = {"testclient"}
 
@@ -42,7 +41,10 @@ def install_http_security(app: FastAPI) -> None:
         host = _host_header_name(request.headers.get("host", ""))
         client_host = request.client.host if request.client else ""
         if host not in _ALLOWED_HOSTS or not _is_loopback_client(client_host):
-            return JSONResponse(status_code=403, content={"detail": "Jarvis accepte uniquement les connexions locales."})
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "Jarvis accepte uniquement les connexions locales."},
+            )
 
         if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
             origin = request.headers.get("origin", "")
