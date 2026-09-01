@@ -1,17 +1,33 @@
-"""Jarvis Papa web application."""
+"""Jarvis Papa local application service."""
 
 from fastapi import HTTPException, Query
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
+import jarvis_papa.agent as agent_module
+import jarvis_papa.mail_intelligence as mail_intelligence_module
+import jarvis_papa.routes as routes_module
+import jarvis_papa.tooling as tooling_module
+from jarvis_papa.advanced_routes import router as advanced_router
 from jarvis_papa.conversation import conversation_manager
 from jarvis_papa.diagnostics import diagnostics
-from jarvis_papa.routes import create_app
+from jarvis_papa.mail_intelligence import intelligent_mail_assistant
+from jarvis_papa.memory_semantic import semantic_memory_store
 from jarvis_papa.speech import SpeechEvent, speech_coordinator
 from jarvis_papa.thunderbird import thunderbird_bridge_state
 from jarvis_papa.voice import voice_service
 
-app = create_app()
+# Keep one protected memory implementation and one mail intelligence implementation
+# across the whole process. Existing modules import their collaborators at module
+# scope, so wiring them here upgrades behaviour without duplicating state.
+routes_module.mail_assistant = intelligent_mail_assistant
+routes_module.memory_store = semantic_memory_store
+agent_module.memory_store = semantic_memory_store
+tooling_module.memory_store = semantic_memory_store
+mail_intelligence_module.memory_store = semantic_memory_store
+
+app = routes_module.create_app()
+app.include_router(advanced_router)
 voice_service.prewarm_async()
 
 
