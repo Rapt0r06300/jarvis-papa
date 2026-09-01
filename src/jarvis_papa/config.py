@@ -4,6 +4,8 @@ from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from jarvis_papa.secret_store import load_windows_secret_overrides, migrate_legacy_env_secrets
+
 
 def _is_frozen() -> bool:
     return bool(getattr(sys, "frozen", False))
@@ -26,10 +28,19 @@ _QWEN_PYTHON = (
     if _is_frozen() and sys.platform == "win32"
     else ".venv-qwen-tts/Scripts/python.exe"
 )
+_PROCESS_SECRET_ENV = {
+    "elevenlabs_api_key": "JARVIS_ELEVENLABS_API_KEY",
+    "azure_speech_key": "JARVIS_AZURE_SPEECH_KEY",
+}
 
 
 class Settings(BaseSettings):
-    """Local Jarvis configuration loaded from environment variables or a per-user .env."""
+    """Jarvis configuration.
+
+    Source/developer mode may use a local .env. Installed Windows builds use code
+    defaults plus DPAPI-protected per-user secrets; Robert never needs to edit a
+    configuration file.
+    """
 
     app_name: str = "Jarvis Papa"
     user_name: str = "Robert"
@@ -141,4 +152,26 @@ class Settings(BaseSettings):
     )
 
 
-settings = Settings()
+def _apply_installed_secret_storage(current: Settings) -> Settings:
+    if not (_is_frozen() and sys.platform == "win32"):
+        return current
+
+    updates: dict[str, str] = {}
+    protected = load_windows_secret_overrides(_DATA_DIR)
+    for field_name, value in protected.items():
+        environment_name = _PROCESS_SECRET_ENV.get(field_name, "")
+        if environment_name and not os.environ.get(environment_name):
+            updates[field_name] = value
+
+    migrated = migrate_legacy_env_secrets(_DATA_DIR, _ENV_FILE)
+    for field_name, value in migrated.items():
+        environment_name = _PROCESS_SECRET_ENV.get(field_name, "")
+        if environment_name and not os.environ.get(environment_name):
+            updates[field_name] = value
+
+    if not updates:
+        return current
+    return current.model_copy(update=updates)
+
+
+settings = _apply_installed_secret_storage(Settings())
