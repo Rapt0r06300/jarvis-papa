@@ -7,7 +7,6 @@ from threading import Lock
 
 from jarvis_papa.config import settings
 
-
 _SENSITIVE_KEYS = {
     "password",
     "mot_de_passe",
