@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "jarvis-papa"
-version = "0.4.0"
+version = "0.5.0"
 description = "Assistant personnel local-first pour Windows"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -26,6 +26,7 @@ dev = [
 [project.scripts]
 jarvis-papa = "jarvis_papa.main:run"
 jarvis-native-host = "jarvis_papa.native_host:run"
+jarvis-diagnostic = "jarvis_papa.diagnostics:run_cli"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/jarvis_papa"]
