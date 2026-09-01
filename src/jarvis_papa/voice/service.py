@@ -15,7 +15,6 @@ from jarvis_papa.voice.providers import (
     AzureSpeechProvider,
     ElevenLabsProvider,
     Qwen3TTSProvider,
-    VoiceArtifact,
     VoiceProvider,
     WindowsSystemProvider,
 )
