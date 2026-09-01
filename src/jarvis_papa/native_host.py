@@ -2,6 +2,7 @@ import json
 import struct
 import sys
 import threading
+import time
 import urllib.error
 import urllib.request
 from typing import Any
@@ -9,6 +10,8 @@ from typing import Any
 from jarvis_papa.config import settings
 
 _write_lock = threading.Lock()
+_sent_lock = threading.Lock()
+_sent_times: dict[str, float] = {}
 
 
 def _api_url(path: str) -> str:
@@ -21,7 +24,7 @@ def _api_request(
     payload: dict[str, object] | None = None,
 ) -> dict[str, Any] | list[Any] | None:
     data = None
-    headers: dict[str, str] = {}
+    headers: dict[str, str] = {"X-Jarvis-Bridge": "thunderbird-native-host"}
     if payload is not None:
         data = json.dumps(payload).encode("utf-8")
         headers["Content-Type"] = "application/json"
@@ -33,7 +36,7 @@ def _api_request(
         method=method,
     )
     try:
-        with urllib.request.urlopen(request, timeout=4) as response:
+        with urllib.request.urlopen(request, timeout=5) as response:
             raw = response.read()
     except (OSError, urllib.error.URLError):
         return None
@@ -74,19 +77,22 @@ def send_message(payload: dict[str, object]) -> None:
 
 
 def _poll_commands(stop_event: threading.Event) -> None:
-    sent: set[str] = set()
-    while not stop_event.wait(2):
+    while not stop_event.wait(1.5):
         payload = _api_request("GET", "/api/thunderbird/commands")
         if not isinstance(payload, list):
             continue
-
+        now = time.monotonic()
         for item in payload:
             if not isinstance(item, dict):
                 continue
             command_id = item.get("id")
-            if not isinstance(command_id, str) or command_id in sent:
+            if not isinstance(command_id, str):
                 continue
-            sent.add(command_id)
+            with _sent_lock:
+                last_sent = _sent_times.get(command_id)
+                if last_sent is not None and now - last_sent < 12:
+                    continue
+                _sent_times[command_id] = now
             send_message({"type": "command", "command": item})
 
 
@@ -110,7 +116,15 @@ def _handle_message(message: dict[str, Any]) -> None:
         command_id = message.get("command_id")
         if not isinstance(command_id, str):
             return
-        _api_request("POST", f"/api/thunderbird/commands/{command_id}/ack", {})
+        ok = bool(message.get("ok"))
+        error = message.get("error")
+        _api_request(
+            "POST",
+            f"/api/thunderbird/commands/{command_id}/ack",
+            {"ok": ok, "error": str(error)[:1200] if error else None},
+        )
+        with _sent_lock:
+            _sent_times.pop(command_id, None)
         return
 
     send_message({"type": "error", "error": "unknown_message_type"})
