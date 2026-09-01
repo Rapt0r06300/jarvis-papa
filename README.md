@@ -1,139 +1,134 @@
 # Jarvis Papa
 
-Assistant personnel **local-first** pour Windows, conçu pour rendre les tâches quotidiennes très simples : mails Thunderbird, fichiers, navigation, contrôle Windows, mémoire et assistance intelligente.
+Jarvis Papa est un assistant personnel **local-first pour Windows** : mails Thunderbird, documents, applications, navigation, mémoire, voix et aide intelligente.
 
-## Interface
+## Une vraie application Windows
 
-Jarvis est pensé pour fonctionner **sans microphone** : Robert utilise surtout de gros boutons et quelques choix simples, tandis que Jarvis répond à voix haute quand c'est utile.
+Depuis la version **0.6.0**, l'interface principale n'est plus une page web. Jarvis possède une **fenêtre Windows native PySide6** et se lance avec `Jarvis.exe`.
 
-L'écran principal reste volontairement léger :
+Robert n'a donc pas besoin d'ouvrir Chrome, Edge ou un autre navigateur pour utiliser Jarvis. Un petit service HTTP reste uniquement actif sur `127.0.0.1` en arrière-plan pour le pont Thunderbird et les composants internes ; il n'est pas l'interface utilisateur.
 
-- un visage d'assistante féminine animé lorsqu'elle parle ;
-- au maximum quelques tâches importantes à la fois ;
-- un résumé très court de ce qu'il faut comprendre ;
-- de gros boutons simples ;
-- les newsletters non importantes restent discrètes ;
-- aucune interface technique n'est imposée à Robert.
+La fenêtre native garde l'expérience volontairement simple :
+
+- visage féminin animé quand Jarvis parle ;
+- `Bonjour Robert` et état de Jarvis clairement visibles ;
+- bouton **Fais-moi le point** ;
+- boutons **Ouvrir mes mails** et **Ouvrir mes documents** ;
+- au maximum trois tâches importantes visibles ;
+- résumés et recommandations très courts ;
+- sélection simple d'un document trouvé ;
+- deux fenêtres de confirmation successives avant toute modification sensible ;
+- newsletters discrètes.
+
+## Installation normale
+
+Le livrable Windows principal est :
+
+```text
+JarvisPapa-Setup.exe
+```
+
+Il installe l'application dans le profil Windows, crée :
+
+- un raccourci **Jarvis** sur le Bureau ;
+- un raccourci **Jarvis** dans le menu Démarrer ;
+- `JarvisDiagnostic.exe` ;
+- `JarvisNativeHost.exe` pour Thunderbird ;
+- le manifeste Native Messaging et sa clé de registre utilisateur ;
+- l'extension Thunderbird `.xpi` dans le dossier d'installation.
+
+Après installation, Robert lance simplement :
+
+```text
+Jarvis.exe
+```
+
+Aucune installation de Python n'est nécessaire pour utiliser le programme empaqueté : PyInstaller embarque l'environnement nécessaire dans l'application Windows.
+
+Les données modifiables et la configuration restent séparées du programme dans :
+
+```text
+%LOCALAPPDATA%\JarvisPapa
+```
+
+Elles ne sont pas supprimées automatiquement à la désinstallation, afin de ne pas perdre la mémoire/configuration de Jarvis par accident.
+
+## Fabrication des exécutables
+
+Le workflow GitHub Actions `Windows EXE` construit sous Windows :
+
+1. `Jarvis.exe` en mode **onedir/windowed** pour un démarrage fiable et sans console ;
+2. `JarvisNativeHost.exe` pour le pont Thunderbird ;
+3. `JarvisDiagnostic.exe` ;
+4. l'extension Thunderbird `.xpi` ;
+5. `JarvisPapa-Setup.exe` avec Inno Setup.
+
+Le workflow lance aussi réellement le `Jarvis.exe` empaqueté en mode graphique hors écran et vérifie que son service local répond avant de publier l'artefact. PyInstaller doit construire un exécutable Windows sur Windows, ce que fait précisément ce workflow.
 
 ## Voix intelligente
 
-Jarvis ne parle pas à chaque événement. Il parle notamment pour :
+Jarvis parle automatiquement quand c'est utile. L'ordre de secours est :
 
-- résumer rapidement chaque mail important ;
-- répondre à une demande de Robert ;
-- signaler une information urgente ou une action nécessaire ;
-- expliquer précisément une confirmation.
+1. **ElevenLabs** — qualité maximale ;
+2. **Azure Speech** — excellente qualité/fiabilité ;
+3. **Qwen3-TTS** — voix locale si son environnement local est installé ;
+4. **voix Windows** — dernier recours.
 
-Le moteur vocal essaie automatiquement :
-
-1. **ElevenLabs** pour la qualité maximale ;
-2. **Azure Speech** comme solution cloud fiable ;
-3. **Qwen3-TTS** pour une voix locale et hors ligne ;
-4. une voix Windows en dernier recours.
-
-Qwen3-TTS fonctionne désormais dans un **worker local persistant** : le modèle lourd est chargé une fois puis réutilisé pour les phrases suivantes. Jarvis peut le préchauffer au démarrage et choisit automatiquement un autre port local si un ancien worker a laissé le port prévu occupé après un crash.
-
-Les contenus sensibles utilisent par défaut uniquement `qwen3,windows`. Ils ne sont donc pas envoyés vers un fournisseur vocal cloud sans modification explicite de la configuration locale.
+Qwen3-TTS utilise un worker local persistant : le modèle lourd reste chargé entre les phrases. Les contenus sensibles utilisent par défaut uniquement la chaîne locale `qwen3,windows`, sauf changement explicite de configuration.
 
 La cible est une voix de jeune femme française adulte, douce, chaleureuse, naturelle, très articulée et jamais volontairement robotique. Voir `docs/VOICE.md`.
 
-## Mails Thunderbird
+## Thunderbird
 
-Le pont Thunderbird permet notamment de :
+Le pont Thunderbird peut :
 
 - détecter les nouveaux mails ;
 - identifier les messages importants ;
-- produire un résumé court à lire et à prononcer ;
-- garder les newsletters non importantes hors de la liste principale ;
-- ouvrir le mail d'origine ;
+- produire un résumé court ;
 - préparer une réponse ;
-- rechercher un document puis préparer un brouillon avec pièce jointe.
+- chercher un document et préparer un brouillon avec pièce jointe ;
+- ranger les newsletters après autorisation ;
+- confirmer à Jarvis qu'une commande a réellement réussi ou échoué.
 
-Le pont envoie maintenant un **heartbeat** à Jarvis. L'autodiagnostic peut donc distinguer « le pont semble installé » de « Thunderbird et le Native Messaging communiquent réellement maintenant ».
+Le Native Host envoie un **heartbeat** à Jarvis : l'autodiagnostic distingue donc une installation théorique d'une connexion Thunderbird réellement vivante.
 
-Un brouillon préparé n'est **pas** un mail envoyé.
+Un brouillon préparé n'est **jamais** considéré comme un mail envoyé.
 
-## Fichiers, Windows et navigateur
+## Sécurité : deux confirmations réelles
 
-Jarvis possède des outils pour :
+- Lire, rechercher, résumer, inspecter ou ouvrir : pas de double autorisation.
+- Modifier, envoyer, supprimer, déplacer, télécharger ou toute autre action sensible : **deux confirmations explicites successives**.
 
-- rechercher rapidement des fichiers, avec Everything si disponible ;
-- ouvrir un fichier ou un dossier ;
-- lancer des applications autorisées ;
-- inspecter les fenêtres et contrôles Windows avec UI Automation ;
-- lire des pages et effectuer certaines tâches web avec Playwright ;
-- mémoriser localement des préférences et habitudes utiles.
-
-## Sécurité : deux confirmations
-
-La règle est simple :
-
-- **lire, rechercher, résumer, inspecter ou ouvrir** ne nécessite pas deux autorisations ;
-- **modifier, envoyer, supprimer, déplacer, télécharger ou effectuer une autre action sensible** nécessite **deux confirmations explicites successives**.
-
-Les autorisations sensibles sont vérifiées côté serveur, liées à l'action précise, expirent et ne peuvent être utilisées qu'une seule fois. Envoyer artificiellement `confirmations=2` à l'API ne contourne pas la protection.
+Les autorisations sont imposées côté serveur, liées à l'action exacte, expirent et sont à usage unique. Un simple compteur envoyé par l'interface ne peut pas contourner cette règle.
 
 ## Autodiagnostic
 
-Jarvis dispose d'un diagnostic en lecture seule qui contrôle notamment :
+`JarvisDiagnostic.exe` vérifie notamment : stockage, localhost, fichiers, navigateur Playwright, Ollama, moteurs vocaux, worker Qwen, Windows, Thunderbird, Native Messaging, heartbeat et commandes Thunderbird en échec.
 
-- la protection localhost ;
-- l'accès au stockage local ;
-- les dossiers de recherche de documents ;
-- Playwright/Chromium ;
-- Ollama et son mode de secours ;
-- les moteurs vocaux et l'état du worker Qwen ;
-- Thunderbird sous Windows ;
-- le manifeste Native Messaging et sa clé de registre ;
-- le heartbeat réel Thunderbird ↔ Jarvis ;
-- les commandes Thunderbird en attente ou en échec.
-
-Sous Windows, double-cliquer sur :
+Le service interne expose aussi :
 
 ```text
-DIAGNOSTIC_JARVIS.bat
+GET /health
+GET /ready
+GET /api/diagnostics
 ```
-
-L'API expose aussi :
-
-```text
-GET /health            -> processus vivant, réponse très rapide
-GET /ready             -> diagnostic de disponibilité
-GET /api/diagnostics   -> rapport complet
-```
-
-`INSTALLER_JARVIS.bat` lance automatiquement un premier diagnostic. `LANCER_JARVIS.bat` attend maintenant que `/health` réponde avant d'ouvrir l'interface dans le navigateur.
 
 ## Confidentialité
 
-- Les données restent locales autant que possible.
-- Les clés API, mots de passe et jetons ne doivent jamais être ajoutés à GitHub.
-- Les clés ElevenLabs/Azure éventuelles sont placées uniquement dans le fichier `.env` local, déjà ignoré par Git.
-- Qwen3-TTS et Ollama permettent des fonctions locales sans clé cloud.
+- Données locales autant que possible.
+- Aucune clé API ou mot de passe dans GitHub.
+- Les éventuelles clés ElevenLabs/Azure restent dans le `.env` du profil local.
+- Le service interne écoute uniquement sur localhost par défaut.
 
-## Installation Windows
+## Mode développeur
 
-Prérequis : Python 3.12+.
-
-Installation principale :
+Les anciens scripts `.bat` restent disponibles pour développer ou dépanner depuis les sources. `LANCER_JARVIS.bat` lance désormais lui aussi **la fenêtre native**, sans ouvrir de navigateur.
 
 ```text
 INSTALLER_JARVIS.bat
-```
-
-Voix locale Qwen3-TTS facultative :
-
-```text
-INSTALLER_VOIX_LOCALE.bat
-```
-
-Puis lancer :
-
-```text
 LANCER_JARVIS.bat
+DIAGNOSTIC_JARVIS.bat
 ```
-
-L'interface est disponible localement sur `http://127.0.0.1:8765`.
 
 ## Tests
 
@@ -141,4 +136,4 @@ L'interface est disponible localement sur `http://127.0.0.1:8765`.
 pytest
 ```
 
-La CI GitHub compile, lint et teste Jarvis sur **Ubuntu et Windows** à chaque changement sur `main`.
+La CI compile, lint et teste Jarvis sur **Ubuntu et Windows**. Le workflow séparé **Windows EXE** valide en plus les exécutables et l'installateur réels.
