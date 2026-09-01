@@ -6,7 +6,11 @@ from pathlib import Path
 import pytest
 
 import jarvis_papa.secret_store as secret_module
-from jarvis_papa.secret_store import DPAPIProtector, EncryptedSecretStore, migrate_legacy_env_secrets
+from jarvis_papa.secret_store import (
+    DPAPIProtector,
+    EncryptedSecretStore,
+    migrate_legacy_env_secrets,
+)
 
 
 class TestProtector:
