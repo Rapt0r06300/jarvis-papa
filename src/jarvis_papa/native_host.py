@@ -49,6 +49,14 @@ def _api_request(
         return None
 
 
+def _heartbeat() -> None:
+    _api_request(
+        "POST",
+        "/api/thunderbird/bridge/heartbeat",
+        {"source": "native_host", "pid": None},
+    )
+
+
 def read_message() -> dict[str, Any] | None:
     raw_length = sys.stdin.buffer.read(4)
     if len(raw_length) != 4:
@@ -77,11 +85,15 @@ def send_message(payload: dict[str, object]) -> None:
 
 
 def _poll_commands(stop_event: threading.Event) -> None:
+    last_heartbeat = 0.0
     while not stop_event.wait(1.5):
+        now = time.monotonic()
+        if now - last_heartbeat >= 5.0:
+            _heartbeat()
+            last_heartbeat = now
         payload = _api_request("GET", "/api/thunderbird/commands")
         if not isinstance(payload, list):
             continue
-        now = time.monotonic()
         for item in payload:
             if not isinstance(item, dict):
                 continue
@@ -100,6 +112,7 @@ def _handle_message(message: dict[str, Any]) -> None:
     message_type = message.get("type")
 
     if message_type == "ping":
+        _heartbeat()
         send_message({"type": "pong"})
         return
 
@@ -108,6 +121,7 @@ def _handle_message(message: dict[str, Any]) -> None:
         if not isinstance(mail, dict):
             send_message({"type": "error", "error": "invalid_mail_payload"})
             return
+        _heartbeat()
         result = _api_request("POST", "/api/mail/incoming", mail)
         send_message({"type": "mail_ack", "result": result or {"accepted": False}})
         return
@@ -123,6 +137,7 @@ def _handle_message(message: dict[str, Any]) -> None:
             f"/api/thunderbird/commands/{command_id}/ack",
             {"ok": ok, "error": str(error)[:1200] if error else None},
         )
+        _heartbeat()
         with _sent_lock:
             _sent_times.pop(command_id, None)
         return
@@ -132,6 +147,7 @@ def _handle_message(message: dict[str, Any]) -> None:
 
 def run() -> None:
     stop_event = threading.Event()
+    _heartbeat()
     poller = threading.Thread(target=_poll_commands, args=(stop_event,), daemon=True)
     poller.start()
     try:
