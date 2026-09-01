@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+import os
 import sys
-from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
@@ -193,7 +193,9 @@ class FirstLaunchDialog(QDialog):
             detail_label.setObjectName("muted")
             text_layout.addWidget(detail_label)
             layout.addLayout(text_layout, 1)
-            state = QLabel("✓" if status == "ok" else ("À vérifier" if status == "error" else "Facultatif"))
+            state = QLabel(
+                "✓" if status == "ok" else ("À vérifier" if status == "error" else "Facultatif")
+            )
             if status == "ok":
                 state.setObjectName("checkOk")
             elif status == "error":
@@ -233,6 +235,8 @@ class FirstLaunchDialog(QDialog):
 
 
 def should_run_onboarding() -> bool:
+    if os.environ.get("JARVIS_SKIP_ONBOARDING") == "1":
+        return False
     return not (settings.runtime_dir / "onboarding-v1.complete").is_file()
 
 
