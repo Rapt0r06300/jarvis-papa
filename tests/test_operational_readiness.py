@@ -31,9 +31,11 @@ def test_thunderbird_bridge_heartbeat_marks_connection_alive() -> None:
     )
     assert response.status_code == 200
     assert response.json()["connected"] is True
+    assert response.json()["pid"] == 1234
 
     status = client.get("/api/thunderbird/bridge/status")
     assert status.status_code == 200
     payload = status.json()
     assert payload["connected"] is True
     assert payload["source"] == "test-native-host"
+    assert payload["pid"] == 1234
