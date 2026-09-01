@@ -29,7 +29,7 @@ build = [
 ]
 
 [project.scripts]
-jarvis-papa = "jarvis_papa.desktop_app:run"
+jarvis-papa = "jarvis_papa.professional_desktop:run"
 jarvis-papa-server = "jarvis_papa.main:run"
 jarvis-native-host = "jarvis_papa.native_host:run"
 jarvis-diagnostic = "jarvis_papa.diagnostics:run_cli"
@@ -49,4 +49,5 @@ target-version = "py312"
 "src/jarvis_papa/app.py" = ["F401"]
 "src/jarvis_papa/dashboard.py" = ["I001"]
 "src/jarvis_papa/desktop_app.py" = ["BLE001", "RUF100", "UP035"]
+"src/jarvis_papa/professional_desktop.py" = ["BLE001", "I001", "UP035"]
 "packaging/*.py" = ["I001"]
