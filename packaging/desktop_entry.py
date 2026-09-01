@@ -22,7 +22,7 @@ def _prepare_windowed_runtime() -> None:
 
 _prepare_windowed_runtime()
 
-from jarvis_papa.desktop_app import run
+from jarvis_papa.professional_desktop import run
 
 
 if __name__ == "__main__":
