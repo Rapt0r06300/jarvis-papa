@@ -2,6 +2,8 @@
 
 Jarvis Papa est un assistant personnel **local-first pour Windows** : mails Thunderbird, documents, applications, navigation, mémoire, voix et aide intelligente.
 
+La transformation produit vers l'assistant proactif centré situations de Robert est pilotée par la roadmap canonique : [`docs/ROADMAP_ROBERT_AUTOPILOT.md`](docs/ROADMAP_ROBERT_AUTOPILOT.md).
+
 ## Une vraie application Windows
 
 Depuis la version **0.6.0**, l'interface principale n'est plus une page web. Jarvis possède une **fenêtre Windows native PySide6** et se lance avec `Jarvis.exe`.
@@ -25,7 +27,13 @@ La fenêtre native garde l'expérience volontairement simple :
 Le livrable Windows principal est :
 
 ```text
-JarvisPapa-Setup.exe
+Jarvis-Setup.exe
+```
+
+Le dépôt publie également l'installeur canonique via Git LFS dans :
+
+```text
+installer\Jarvis-Setup.exe
 ```
 
 Il installe l'application dans le profil Windows, crée :
@@ -61,7 +69,7 @@ Le workflow GitHub Actions `Windows EXE` construit sous Windows :
 2. `JarvisNativeHost.exe` pour le pont Thunderbird ;
 3. `JarvisDiagnostic.exe` ;
 4. l'extension Thunderbird `.xpi` ;
-5. `JarvisPapa-Setup.exe` avec Inno Setup.
+5. `Jarvis-Setup.exe` avec Inno Setup.
 
 Le workflow lance aussi réellement le `Jarvis.exe` empaqueté en mode graphique hors écran et vérifie que son service local répond avant de publier l'artefact. PyInstaller doit construire un exécutable Windows sur Windows, ce que fait précisément ce workflow.
 
@@ -117,8 +125,9 @@ GET /api/diagnostics
 
 - Données locales autant que possible.
 - Aucune clé API ou mot de passe dans GitHub.
-- Les éventuelles clés ElevenLabs/Azure restent dans le `.env` du profil local.
-- Le service interne écoute uniquement sur localhost par défaut.
+- Dans l'application Windows empaquetée, les secrets locaux sont stockés via le **secret store DPAPI**. Le build final ne repose pas sur un `.env` utilisateur en clair ; les anciens secrets `.env` peuvent être migrés vers le stockage protégé puis le fichier legacy supprimé.
+- Un `.env` peut encore être utilisé dans un **contexte de développement depuis les sources**, mais ce n'est pas le contrat de stockage du produit Windows final.
+- Le service interne écoute uniquement sur localhost par défaut et ses routes protégées utilisent un bearer token local stocké via DPAPI.
 
 ## Mode développeur
 
