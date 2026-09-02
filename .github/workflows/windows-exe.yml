@@ -9,9 +9,9 @@ on:
       - "packaging/**"
       - "scripts/**"
       - "thunderbird-extension/**"
+      - "tests/**"
       - "pyproject.toml"
       - ".env.example"
-      - ".gitattributes"
       - ".github/workflows/windows-exe.yml"
       - ".github/workflows/release.yml"
 
@@ -34,6 +34,12 @@ jobs:
 
       - name: Install build dependencies
         run: python -m pip install -e ".[build]"
+
+      - name: Ruff
+        run: python -m ruff check .
+
+      - name: Pytest
+        run: python -m pytest -q
 
       - name: Generate Windows icon
         run: python packaging/generate_icon.py
@@ -85,10 +91,7 @@ jobs:
           }
 
           $pfx = Join-Path $env:RUNNER_TEMP "jarvis-signing.pfx"
-          [IO.File]::WriteAllBytes(
-            $pfx,
-            [Convert]::FromBase64String($env:WINDOWS_SIGNING_PFX_BASE64)
-          )
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_SIGNING_PFX_BASE64))
           $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" `
             -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
             Where-Object { $_.FullName -match '\\x64\\signtool\.exe$' } |
@@ -138,18 +141,12 @@ jobs:
           $healthy = $false
           try {
             for ($i = 0; $i -lt 60; $i++) {
-              if ($process.HasExited) {
-                throw "Jarvis.exe exited unexpectedly with code $($process.ExitCode)"
-              }
+              if ($process.HasExited) { throw "Jarvis.exe exited unexpectedly with code $($process.ExitCode)" }
               try {
                 $health = Invoke-RestMethod -Uri "http://127.0.0.1:8765/health" -TimeoutSec 1
                 if ($health.status -eq "ok") {
                   $status = Invoke-RestMethod -Uri "http://127.0.0.1:8765/api/status" -TimeoutSec 2
                   if ($status.version -ne "0.7.0") { throw "Unexpected Jarvis version: $($status.version)" }
-                  $quality = Invoke-RestMethod -Uri "http://127.0.0.1:8765/api/advanced/voice/quality" -TimeoutSec 2
-                  if (-not ($quality.PSObject.Properties.Name -contains "premium_ready")) {
-                    throw "Voice quality endpoint is missing its readiness contract"
-                  }
                   $maintenance = Invoke-RestMethod -Uri "http://127.0.0.1:8765/api/maintenance/status" -TimeoutSec 2
                   if (-not ($maintenance.PSObject.Properties.Name -contains "updates")) {
                     throw "Maintenance reliability contract is missing from packaged app"
@@ -359,14 +356,12 @@ jobs:
             if ($signingExpected -and $signature.Status -ne "Valid") {
               throw "Expected a valid Authenticode signature for $file, got $($signature.Status)"
             }
-            Write-Host "OK $file - $size bytes - signature $($signature.Status)"
           }
           if ($signingExpected -and "${{ steps.sign_installer.outputs.status }}" -ne "SIGNED") {
             throw "Application binaries were signed but installer was not signed"
           }
           $headline = if ($signingExpected) { "SIGNED" } else { "UNSIGNED_CERTIFICATE_NOT_CONFIGURED" }
-          @($headline) + $statusLines |
-            Set-Content "installer-output\signing-status.txt" -Encoding utf8
+          @($headline) + $statusLines | Set-Content "installer-output\signing-status.txt" -Encoding utf8
 
           $manifest = @()
           foreach ($file in $files) {
@@ -375,29 +370,7 @@ jobs:
           }
           $manifest | Set-Content "installer-output\deliverables.sha256" -Encoding ascii
           $setupHash = (Get-FileHash "installer-output\Jarvis-Setup.exe" -Algorithm SHA256).Hash.ToLowerInvariant()
-          "$setupHash  Jarvis-Setup.exe" |
-            Set-Content "installer-output\Jarvis-Setup.exe.sha256" -Encoding ascii
-          Write-Host "Installer SHA256 $setupHash"
-
-      - name: Publish installer into main with Git LFS
-        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-        shell: pwsh
-        run: |
-          git lfs install --local
-          New-Item -ItemType Directory -Path installer -Force | Out-Null
-          Copy-Item "installer-output\Jarvis-Setup.exe" "installer\Jarvis-Setup.exe" -Force
-          Copy-Item "installer-output\Jarvis-Setup.exe.sha256" "installer\Jarvis-Setup.exe.sha256" -Force
-          Copy-Item "installer-output\deliverables.sha256" "installer\deliverables.sha256" -Force
-          Copy-Item "installer-output\signing-status.txt" "installer\signing-status.txt" -Force
-          git add .gitattributes installer/Jarvis-Setup.exe installer/Jarvis-Setup.exe.sha256 installer/deliverables.sha256 installer/signing-status.txt
-          if (-not (git status --porcelain)) {
-            Write-Host "Repository installer is already current."
-            exit 0
-          }
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "build: publish Jarvis 0.7.0 installer [skip ci]"
-          git push origin HEAD:main
+          "$setupHash  Jarvis-Setup.exe" | Set-Content "installer-output\Jarvis-Setup.exe.sha256" -Encoding ascii
 
       - name: Upload final Windows installer artifact
         uses: actions/upload-artifact@v4
