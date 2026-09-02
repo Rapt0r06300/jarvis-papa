@@ -20,7 +20,25 @@ def _prepare_windowed_runtime() -> None:
         sys.stderr = log
 
 
+def _set_windows_app_identity() -> None:
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("JarvisPapa.Desktop")
+    except (AttributeError, OSError):
+        return
+
+
 _prepare_windowed_runtime()
+_set_windows_app_identity()
+
+from jarvis_papa.restore_coordinator import restore_coordinator
+
+_restore_result = restore_coordinator.apply_pending()
+if not _restore_result.get("ok"):
+    print(f"Jarvis restore warning: {_restore_result.get('detail')}", file=sys.stderr)
 
 from jarvis_papa.desktop_api_auth import install_desktop_api_auth
 from jarvis_papa.onboarding import run_first_launch_onboarding
