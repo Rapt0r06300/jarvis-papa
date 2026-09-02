@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import re
-import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from email.utils import parseaddr
@@ -156,7 +154,11 @@ class TriageDecision:
         if self.destructive_action_allowed:
             raise ValueError("email triage may never authorize destructive actions")
         object.__setattr__(self, "confidence", confidence)
-        object.__setattr__(self, "reasons", tuple(_clean_text(x, 300) for x in self.reasons if x)[:12])
+        object.__setattr__(
+            self,
+            "reasons",
+            tuple(_clean_text(x, 300) for x in self.reasons if x)[:12],
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -193,9 +195,21 @@ class StructuredEmailMeaning:
         object.__setattr__(self, "importance", importance)
         object.__setattr__(self, "confidence", confidence)
         object.__setattr__(self, "deadline", deadline)
-        object.__setattr__(self, "references", tuple(_clean_text(x, 300) for x in self.references if x)[:32])
-        object.__setattr__(self, "entities", tuple(_clean_text(x, 300) for x in self.entities if x)[:32])
-        object.__setattr__(self, "related_situation", _clean_identifier(self.related_situation, 160))
+        object.__setattr__(
+            self,
+            "references",
+            tuple(_clean_text(x, 300) for x in self.references if x)[:32],
+        )
+        object.__setattr__(
+            self,
+            "entities",
+            tuple(_clean_text(x, 300) for x in self.entities if x)[:32],
+        )
+        object.__setattr__(
+            self,
+            "related_situation",
+            _clean_identifier(self.related_situation, 160),
+        )
 
     @classmethod
     def from_model_payload(
@@ -231,7 +245,9 @@ class StructuredEmailMeaning:
             raise ValueError("invalid typed model email meaning") from exc
         references = _string_tuple(payload.get("references", ()))
         entities = _string_tuple(payload.get("entities", ()))
-        schema_version = int(payload.get("schema_version", EMAIL_MEANING_SCHEMA_VERSION))
+        schema_version = int(
+            payload.get("schema_version", EMAIL_MEANING_SCHEMA_VERSION)
+        )
         if schema_version != EMAIL_MEANING_SCHEMA_VERSION:
             raise ValueError("unsupported email meaning schema version")
         return cls(
@@ -239,7 +255,11 @@ class StructuredEmailMeaning:
             intent=intent,
             action_state=action_state,
             importance=importance,
-            deadline=payload.get("deadline") if payload.get("deadline") is not None else None,
+            deadline=(
+                payload.get("deadline")
+                if payload.get("deadline") is not None
+                else None
+            ),
             requested_action=str(payload.get("requested_action") or ""),
             references=references,
             confidence=confidence,
@@ -339,7 +359,9 @@ class EmailThreadState:
             self.responsibility = Responsibility.OTHER_PARTY_MUST_ACT
             self.latest_state = "waiting_for_other_party"
         else:
-            self.responsibility = Responsibility.WAITING if self.open_question else Responsibility.UNCLEAR
+            self.responsibility = (
+                Responsibility.WAITING if self.open_question else Responsibility.UNCLEAR
+            )
             self.latest_state = "informational"
 
     def to_dict(self) -> dict[str, object]:
@@ -363,15 +385,62 @@ class EmailIntelligence:
     """Read-only cheap-first email understanding with typed escalation boundaries."""
 
     _intent_terms: tuple[tuple[EmailIntent, tuple[str, ...]], ...] = (
-        (EmailIntent.PICKUP, ("point relais", "point de retrait", "à retirer", "a retirer", "disponible au relais")),
-        (EmailIntent.DELAY, ("retard", "delay", "livraison retardée", "livraison retardee")),
-        (EmailIntent.SHIPPING, ("expédi", "expedie", "tracking", "suivi colis", "en transit", "livraison")),
+        (
+            EmailIntent.PICKUP,
+            (
+                "point relais",
+                "point de retrait",
+                "à retirer",
+                "a retirer",
+                "disponible au relais",
+            ),
+        ),
+        (
+            EmailIntent.DELAY,
+            ("retard", "delay", "livraison retardée", "livraison retardee"),
+        ),
+        (
+            EmailIntent.SHIPPING,
+            ("expédi", "expedie", "tracking", "suivi colis", "en transit", "livraison"),
+        ),
         (EmailIntent.REFUND, ("remboursement", "remboursé", "rembourse", "refund")),
-        (EmailIntent.ORDER, ("commande", "order", "confirmation d'achat", "confirmation de commande")),
-        (EmailIntent.BANK_SECURITY, ("banque", "carte bancaire", "compte bloqué", "compte bloque", "transaction", "fraude", "sécurité", "securite")),
-        (EmailIntent.MARKETPLACE, ("leboncoin", "ebay", "acheteur", "vendeur", "annonce")),
-        (EmailIntent.NEGOTIATION, ("offre", "contre-offre", "contre offre", "prix proposé", "prix propose")),
-        (EmailIntent.ADMIN, ("administration", "impôt", "impot", "assurance", "dossier", "attestation", "mutuelle")),
+        (
+            EmailIntent.ORDER,
+            ("commande", "order", "confirmation d'achat", "confirmation de commande"),
+        ),
+        (
+            EmailIntent.BANK_SECURITY,
+            (
+                "banque",
+                "carte bancaire",
+                "compte bloqué",
+                "compte bloque",
+                "transaction",
+                "fraude",
+                "sécurité",
+                "securite",
+            ),
+        ),
+        (
+            EmailIntent.MARKETPLACE,
+            ("leboncoin", "ebay", "acheteur", "vendeur", "annonce"),
+        ),
+        (
+            EmailIntent.NEGOTIATION,
+            ("offre", "contre-offre", "contre offre", "prix proposé", "prix propose"),
+        ),
+        (
+            EmailIntent.ADMIN,
+            (
+                "administration",
+                "impôt",
+                "impot",
+                "assurance",
+                "dossier",
+                "attestation",
+                "mutuelle",
+            ),
+        ),
     )
 
     def triage(
@@ -392,14 +461,16 @@ class EmailIntelligence:
                 action_state=ActionState.WAIT_FOR_OTHER_PARTY,
                 confidence=max(0.9, assessment.confidence),
                 escalation=ModelStage.NONE,
-                reasons=("Message envoyé par Robert : l'autre partie doit maintenant répondre.",),
+                reasons=(
+                    "Message envoyé par Robert : l'autre partie doit maintenant répondre.",
+                ),
                 bounded_context=message.bounded_context(max_chars=1600),
             )
 
-        deterministic = assessment.category in {"newsletter", "suspicious", "important"} or intent not in {
-            EmailIntent.NORMAL,
-            EmailIntent.UNKNOWN_IMPORTANT,
-        }
+        deterministic = (
+            assessment.category in {"newsletter", "suspicious", "important"}
+            or intent not in {EmailIntent.NORMAL, EmailIntent.UNKNOWN_IMPORTANT}
+        )
         confidence = assessment.confidence
         if deterministic and confidence >= 0.8:
             return TriageDecision(
@@ -413,11 +484,17 @@ class EmailIntelligence:
 
         if fast_result is None:
             return TriageDecision(
-                intent=EmailIntent.UNKNOWN_IMPORTANT if assessment.action_required else intent,
+                intent=(
+                    EmailIntent.UNKNOWN_IMPORTANT
+                    if assessment.action_required
+                    else intent
+                ),
                 action_state=action_state,
                 confidence=min(confidence, 0.69),
                 escalation=ModelStage.FAST,
-                reasons=tuple(reasons + ["Classification déterministe insuffisamment sûre."]),
+                reasons=tuple(
+                    reasons + ["Classification déterministe insuffisamment sûre."]
+                ),
                 bounded_context=message.bounded_context(max_chars=3200),
             )
 
@@ -448,7 +525,9 @@ class EmailIntelligence:
             action_state=decision.action_state,
             importance=assessment.priority_score,
             deadline=_normalize_rule_deadline(assessment.deadline_text),
-            requested_action=assessment.recommended_action if assessment.action_required else "",
+            requested_action=(
+                assessment.recommended_action if assessment.action_required else ""
+            ),
             references=tuple(message.references[-8:]),
             confidence=decision.confidence,
             provenance=(message.provenance,),
@@ -463,16 +542,26 @@ class EmailIntelligence:
         for intent, terms in cls._intent_terms:
             if any(term in combined for term in terms):
                 return intent
-        if any(token in combined for token in ("avant le", "au plus tard", "échéance", "echeance")):
+        if any(
+            token in combined
+            for token in ("avant le", "au plus tard", "échéance", "echeance")
+        ):
             return EmailIntent.DEADLINE
-        if any(token in combined for token in ("répondre", "repondre", "merci de", "veuillez")):
+        if any(
+            token in combined
+            for token in ("répondre", "repondre", "merci de", "veuillez")
+        ):
             return EmailIntent.ACTION
         if category == "important":
             return EmailIntent.UNKNOWN_IMPORTANT
         return EmailIntent.NORMAL
 
     @staticmethod
-    def _action_state(combined: str, sender_is_father: bool, intent: EmailIntent) -> ActionState:
+    def _action_state(
+        combined: str,
+        sender_is_father: bool,
+        intent: EmailIntent,
+    ) -> ActionState:
         if sender_is_father:
             return ActionState.WAIT_FOR_OTHER_PARTY
         if intent in {EmailIntent.NEWSLETTER, EmailIntent.NOISE, EmailIntent.NORMAL}:
@@ -485,9 +574,21 @@ class EmailIntelligence:
             return ActionState.DEADLINE
         if intent is EmailIntent.REFUND:
             return ActionState.READ_ONLY
-        if any(token in combined for token in ("pièce jointe", "piece jointe", "document demandé", "document demande", "transmettre", "fournir")):
+        if any(
+            token in combined
+            for token in (
+                "pièce jointe",
+                "piece jointe",
+                "document demandé",
+                "document demande",
+                "transmettre",
+                "fournir",
+            )
+        ):
             return ActionState.DOCUMENT_REQUIRED
-        if "?" in combined or any(token in combined for token in ("répondre", "repondre")):
+        if "?" in combined or any(
+            token in combined for token in ("répondre", "repondre")
+        ):
             return ActionState.REPLY
         if intent in {EmailIntent.MARKETPLACE, EmailIntent.NEGOTIATION}:
             return ActionState.USER_DECISION
@@ -497,29 +598,32 @@ class EmailIntelligence:
 def derive_thread_identity(message: EmailMessage) -> ThreadIdentity:
     if message.platform_thread_id:
         return ThreadIdentity(
-            key="platform:" + _sha256(message.platform_thread_id.casefold().encode("utf-8")),
+            key="platform:"
+            + _sha256(message.platform_thread_id.casefold().encode("utf-8")),
             confidence=1.0,
             method="platform_thread_id",
         )
     if message.references:
         root = message.references[0]
         return ThreadIdentity(
-            key="references:" + _sha256(root.casefold().encode("utf-8")),
+            key="message:" + _sha256(root.casefold().encode("utf-8")),
             confidence=0.98,
             method="references_root",
         )
     if message.in_reply_to:
         return ThreadIdentity(
-            key="reply:" + _sha256(message.in_reply_to.casefold().encode("utf-8")),
-            confidence=0.9,
+            key="message:"
+            + _sha256(message.in_reply_to.casefold().encode("utf-8")),
+            confidence=0.95,
             method="in_reply_to",
         )
-    if message.message_id:
-        # A native Message-ID is ideal for duplicate suppression but not enough to merge
-        # unrelated future messages. The key remains stable for this standalone message.
-        native = "message:" + _sha256(message.message_id.casefold().encode("utf-8"))
-    else:  # guarded by EmailMessage validation, retained for defensive readability
-        native = ""
+    if _looks_like_standard_message_id(message.message_id):
+        return ThreadIdentity(
+            key="message:"
+            + _sha256(message.message_id.casefold().encode("utf-8")),
+            confidence=0.9,
+            method="message_id_root",
+        )
     subject = _normalized_subject(message.subject)
     sender_address = parseaddr(message.sender)[1].casefold()
     if subject:
@@ -529,7 +633,12 @@ def derive_thread_identity(message: EmailMessage) -> ThreadIdentity:
             confidence=0.45,
             method="conservative_subject_domain_fallback",
         )
-    return ThreadIdentity(key=native, confidence=0.8, method="message_id_only")
+    return ThreadIdentity(
+        key="message:"
+        + _sha256(message.message_id.casefold().encode("utf-8")),
+        confidence=0.7,
+        method="generated_message_id_only",
+    )
 
 
 def normalize_model_deadline(raw: object) -> str | None:
@@ -552,8 +661,6 @@ def _normalize_rule_deadline(raw: str | None) -> str | None:
             return datetime.strptime(value, pattern).date().isoformat()
         except ValueError:
             continue
-    # Relative weekday/month text remains evidence in the legacy assessment rather than
-    # being converted to a guessed date here.
     return None
 
 
@@ -584,7 +691,8 @@ def _is_resolution_ack(body: str) -> bool:
 def _requested_document(body: str) -> str:
     clean = " ".join(body.split())
     match = re.search(
-        r"(?:transmettre|fournir|joindre|envoyer)\s+(?:le|la|les|un|une|votre|vos)?\s*([^.!?]{3,120})",
+        r"(?:transmettre|fournir|joindre|envoyer)\s+"
+        r"(?:le|la|les|un|une|votre|vos)?\s*([^.!?]{3,120})",
         clean,
         flags=re.IGNORECASE,
     )
@@ -598,14 +706,18 @@ def _normalized_subject(subject: str) -> str:
     return clean[:300]
 
 
+def _looks_like_standard_message_id(value: str) -> bool:
+    clean = value.strip()
+    return clean.startswith("<") and clean.endswith(">") and "@" in clean
+
+
 def _sender_domain(address: str) -> str:
     _local, separator, domain = address.rpartition("@")
     return domain if separator else address
 
 
 def _clean_message_id(value: str) -> str:
-    clean = " ".join(str(value or "").split()).strip()[:300]
-    return clean
+    return " ".join(str(value or "").split()).strip()[:300]
 
 
 def _clean_identifier(value: str, limit: int) -> str:
