@@ -8,6 +8,7 @@ from enum import StrEnum
 from typing import ClassVar, Protocol
 
 from jarvis_papa.governance import ActionContract, PolicyResult, RiskLevel, policy_kernel
+from jarvis_papa.situation_assurance import overdue_follow_ups, reconcile_expected_events
 from jarvis_papa.situation_store import SituationStore, situation_store
 from jarvis_papa.situations import (
     EntityRef,
@@ -21,7 +22,6 @@ from jarvis_papa.situations import (
     SourceHealth,
     SourceSyncResult,
     correlation_keys,
-    overdue_tasks,
     score_priority,
     stable_evidence_hash,
 )
@@ -229,7 +229,7 @@ class SituationOrchestrator:
                 }:
                     continue
 
-            checkpoint = self.store.get_checkpoint(source)
+            checkpoint = self.store.get_checkpoint(source, lane="live")
             cursor = str(checkpoint.get("cursor") or "") if checkpoint else ""
             try:
                 batch = adapter.sync(cursor or None)
@@ -238,63 +238,78 @@ class SituationOrchestrator:
                 continue
 
             batch_evidence: list[str] = []
+            source_failed = False
             for event in batch.events:
                 if token.cancelled:
                     break
                 emit(PipelineStage.NORMALIZE, source, event.event_type)
                 batch_evidence.append(event.identity_key)
-                if not self.store.ingest_event(event):
+                is_new = self.store.ingest_event(event)
+                if not is_new and self.store.event_processed(event.identity_key):
                     duplicates += 1
                     continue
-                processed += 1
+                try:
+                    emit(PipelineStage.CLASSIFY, source, event.event_type)
+                    domain = self.classifier(event)
 
-                emit(PipelineStage.CLASSIFY, source, event.event_type)
-                domain = self.classifier(event)
+                    emit(PipelineStage.EXTRACT, source, "Extraction des entités.")
+                    entities = self.extractor(event)
+                    for entity in entities:
+                        self.store.save_entity(entity)
 
-                emit(PipelineStage.EXTRACT, source, "Extraction des entités.")
-                entities = self.extractor(event)
-                for entity in entities:
-                    self.store.save_entity(entity)
+                    emit(PipelineStage.CORRELATE, source, "Corrélation des preuves.")
+                    keys = correlation_keys(event, entities=entities)
+                    situation = self.store.find_situation_by_keys(keys)
+                    if situation is None:
+                        situation = Situation.create(
+                            event.payload_summary or event.event_type.replace("_", " "),
+                            domain=domain,
+                            confidence=0.0,
+                        )
+                    situation.add_event(event)
+                    reconcile_expected_events(situation, event)
+                    for entity in entities:
+                        if entity.entity_id not in situation.entity_ids:
+                            situation.entity_ids.append(entity.entity_id)
 
-                emit(PipelineStage.CORRELATE, source, "Corrélation des preuves.")
-                keys = correlation_keys(event, entities=entities)
-                situation = self.store.find_situation_by_keys(keys)
-                if situation is None:
-                    situation = Situation.create(
-                        event.payload_summary or event.event_type.replace("_", " "),
-                        domain=domain,
-                        confidence=0.0,
+                    emit(PipelineStage.SCORE, source, "Calcul de priorité explicable.")
+                    priority = score_priority(situation)
+                    situation.metadata["priority_score"] = priority.score
+                    situation.metadata["priority_band"] = priority.band
+                    situation.metadata["priority_reasons"] = list(priority.contributions)
+
+                    emit(PipelineStage.PROPOSE, source, "Préparation des propositions.")
+                    for proposal in self.proposer(situation):
+                        if not any(
+                            item.proposal_id == proposal.proposal_id
+                            for item in situation.proposals
+                        ):
+                            situation.proposals.append(proposal)
+                    for task in overdue_follow_ups(situation):
+                        situation.add_task(task)
+
+                    self.store.save_situation(situation, correlation_keys=keys)
+                    self.store.mark_event_processed(event.identity_key)
+                except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                    source_failed = True
+                    self.store.mark_event_error(event.identity_key, f"{type(exc).__name__}: {exc}")
+                    errors.append(
+                        f"{source}: event {event.source_event_id} {type(exc).__name__}"
                     )
-                situation.add_event(event)
-                for entity in entities:
-                    if entity.entity_id not in situation.entity_ids:
-                        situation.entity_ids.append(entity.entity_id)
-
-                emit(PipelineStage.SCORE, source, "Calcul de priorité explicable.")
-                priority = score_priority(situation)
-                situation.metadata["priority_score"] = priority.score
-                situation.metadata["priority_band"] = priority.band
-                situation.metadata["priority_reasons"] = list(priority.contributions)
-
-                emit(PipelineStage.PROPOSE, source, "Préparation des propositions.")
-                for proposal in self.proposer(situation):
-                    if not any(
-                        item.proposal_id == proposal.proposal_id
-                        for item in situation.proposals
-                    ):
-                        situation.proposals.append(proposal)
-                for task in overdue_tasks(situation):
-                    situation.add_task(task)
-
-                self.store.save_situation(situation, correlation_keys=keys)
+                    continue
+                processed += 1
                 touched.add(situation.situation_id)
 
             if token.cancelled:
                 break
+            if source_failed:
+                errors.append(f"{source}: checkpoint_not_advanced_after_event_failure")
+                continue
             emit(PipelineStage.CHECKPOINT, source, "Enregistrement du point de reprise.")
             self.store.checkpoint(
                 source,
                 batch.next_cursor,
+                lane="live",
                 evidence_hash=stable_evidence_hash(batch_evidence),
             )
 
@@ -341,6 +356,17 @@ class SituationGovernanceBridge:
     def __init__(self, journal: TransactionJournal | None = None) -> None:
         self.journal = journal or transaction_journal
 
+    @staticmethod
+    def idempotency_key(action: SituationAction) -> str:
+        return stable_evidence_hash(
+            {
+                "proposal_id": action.proposal_id,
+                "action_key": action.action_key,
+                "binding": action.binding,
+                "description": action.description,
+            }
+        )
+
     def contract_for(self, action: SituationAction) -> ActionContract:
         return ActionContract.create(
             action_key=action.action_key,
@@ -366,9 +392,16 @@ class SituationGovernanceBridge:
         )
 
     def begin(self, action: SituationAction) -> TransactionRecord:
+        idempotency_key = self.idempotency_key(action)
+        for record in reversed(self.journal.recent(limit=100)):
+            if record.before.get("situation_idempotency_key") == idempotency_key:
+                return record
         return self.journal.begin(
             self.contract_for(action),
-            before={"situation_action_id": action.action_id},
+            before={
+                "situation_action_id": action.action_id,
+                "situation_idempotency_key": idempotency_key,
+            },
         )
 
     def receipt(
