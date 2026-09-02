@@ -107,7 +107,12 @@ def extract_email_commitments(
 
     if meaning is not None and meaning.requested_action:
         key = meaning.requested_action.casefold()
-        if not any(item.obligation.casefold() == key for item in output):
+        generic_fallback = _is_generic_requested_action(meaning.requested_action)
+        precise_commitment_already_found = bool(detected or promise)
+        if (
+            not (generic_fallback and precise_commitment_already_found)
+            and not any(item.obligation.casefold() == key for item in output)
+        ):
             output.append(
                 EmailCommitment(
                     actor="father",
@@ -602,6 +607,19 @@ def _looks_future_promise(text: str) -> bool:
         "je vais vous transmettre",
     )
     return any(marker in lower for marker in markers)
+
+
+def _is_generic_requested_action(text: str) -> bool:
+    value = " ".join(text.casefold().split())
+    generic_markers = (
+        "chercher le document demandé",
+        "chercher le document demande",
+        "préparer la réponse",
+        "preparer la reponse",
+        "préparer une réponse",
+        "preparer une reponse",
+    )
+    return any(marker in value for marker in generic_markers)
 
 
 def _deadline_source_wording(text: str, detector_deadline: str | None) -> str:
