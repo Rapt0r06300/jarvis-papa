@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-import jarvis_papa.email_intelligence as email_module
+import jarvis_papa.email_runtime as email_runtime
 from jarvis_papa.email_intelligence import (
     EMAIL_MEANING_SCHEMA_VERSION,
     EMAIL_TAXONOMY_VERSION,
@@ -272,7 +272,7 @@ def test_p2_07_commitment_reuses_engine_and_normalizes_relative_deadline() -> No
         body="Merci de répondre avant vendredi avec votre attestation.",
         received_at=observed,
     )
-    state = EmailThreadState(derive_thread_identity(message).key)
+    state = email_runtime.RuntimeEmailThreadState(derive_thread_identity(message).key)
     state.update(message, email_intelligence.meaning_from_rules(message))
     assert state.commitments
     commitment = state.commitments[-1]
@@ -282,6 +282,7 @@ def test_p2_07_commitment_reuses_engine_and_normalizes_relative_deadline() -> No
     assert commitment.source_wording.casefold() == "avant vendredi"
     assert commitment.confidence >= 0.75
     assert commitment.provenance.source_id == "<deadline@example.com>"
+    assert state.to_situation_payload()["commitments"]
 
 
 def test_p2_08_future_father_promise_keeps_responsibility_on_father() -> None:
@@ -298,7 +299,7 @@ def test_p2_08_future_father_promise_keeps_responsibility_on_father() -> None:
         sender_is_father=True,
         received_at=root.received_at + 60,
     )
-    state = EmailThreadState(derive_thread_identity(root).key)
+    state = email_runtime.RuntimeEmailThreadState(derive_thread_identity(root).key)
     state.update(root, email_intelligence.meaning_from_rules(root))
     state.update(promise, email_intelligence.meaning_from_rules(promise))
     assert state.responsibility is Responsibility.FATHER_MUST_ACT
@@ -323,15 +324,15 @@ def test_p2_09_newsletters_are_silent_but_bank_alert_stays_visible() -> None:
         body="Une opération inhabituelle nécessite une vérification.",
     )
     newsletter_decisions = [
-        email_module.briefing_decision(message, email_intelligence.triage(message))
+        email_runtime.briefing_decision(message, email_intelligence.triage(message))
         for message in newsletters
     ]
-    bank_decision = email_module.briefing_decision(bank, email_intelligence.triage(bank))
+    bank_decision = email_runtime.briefing_decision(bank, email_intelligence.triage(bank))
     assert all(
-        item.disposition is email_module.BriefingDisposition.IGNORE_FOR_BRIEFING
+        item.disposition is email_runtime.BriefingDisposition.IGNORE_FOR_BRIEFING
         for item in newsletter_decisions
     )
-    assert bank_decision.disposition is email_module.BriefingDisposition.ACTION_REQUIRED
+    assert bank_decision.disposition is email_runtime.BriefingDisposition.ACTION_REQUIRED
     assert all(item.mailbox_mutation_allowed is False for item in newsletter_decisions)
     assert bank_decision.mailbox_mutation_allowed is False
 
@@ -343,14 +344,14 @@ def test_p2_10_lookalike_bank_domain_is_evidence_not_fraud_verdict() -> None:
         subject="URGENT sécurité compte",
         body="Vérifiez immédiatement: http://credit-agricole-secure.example/login",
     )
-    assessment = email_module.assess_email_trust(message)
+    assessment = email_runtime.assess_email_trust(message)
     kinds = {item.kind for item in assessment.signals}
     assert "brand_domain_mismatch" in kinds
     assert "suspicious_link" in kinds
     assert "urgency_cue" in kinds
     assert assessment.requires_verification is True
     assert assessment.certainty < 1.0
-    assert email_module.domain_matches_official(
+    assert email_runtime.domain_matches_official(
         "credit-agricole.fr", ("credit-agricole.fr", "www.credit-agricole.fr")
     )
 
@@ -362,7 +363,7 @@ def test_p2_11_html_sanitizer_blocks_active_and_remote_content() -> None:
         "<img src='https://tracker.example/pixel.gif'>"
         "<a href='http://example.net/dossier'>Voir le dossier</a></body></html>"
     )
-    sanitized = email_module.sanitize_email_html(html, provenance=message.provenance)
+    sanitized = email_runtime.sanitize_email_html(html, provenance=message.provenance)
     assert "steal" not in sanitized.text
     assert "Bonjour" in sanitized.text
     assert sanitized.blocked_active_count >= 1
@@ -374,7 +375,7 @@ def test_p2_11_html_sanitizer_blocks_active_and_remote_content() -> None:
 
 def test_p2_12_backfill_is_bounded_read_only_and_checkpointed(tmp_path) -> None:
     now = datetime(2026, 9, 2, 12, 0, tzinfo=ZoneInfo("Europe/Paris")).timestamp()
-    policy = email_module.EmailBackfillPolicy()
+    policy = email_runtime.EmailBackfillPolicy()
     plan = policy.plan(now)
     assert plan.window_days <= 14
     assert plan.max_messages <= 500
@@ -382,7 +383,7 @@ def test_p2_12_backfill_is_bounded_read_only_and_checkpointed(tmp_path) -> None:
     assert plan.lane == "backfill"
     assert policy.next_window_days(plan.window_days) > plan.window_days
     store = SituationStore(tmp_path / "situations.sqlite3")
-    email_module.save_email_backfill_checkpoint(
+    email_runtime.save_email_backfill_checkpoint(
         store,
         "cursor-42",
         source_version="p2b",
@@ -410,20 +411,20 @@ def test_p2_13_fresh_evidence_backed_bank_mail_preempts_backfill_without_drops()
         received_at=1_780_000_500.0,
     )
     items = [
-        email_module.EmailWorkItem(
+        email_runtime.EmailWorkItem(
             newsletter,
             email_intelligence.triage(newsletter),
             lane="backfill",
             sequence=1,
         ),
-        email_module.EmailWorkItem(
+        email_runtime.EmailWorkItem(
             bank,
             email_intelligence.triage(bank),
             lane="live",
             sequence=2,
         ),
     ]
-    ordered = email_module.prioritize_email_work(items)
+    ordered = email_runtime.prioritize_email_work(items)
     assert [item.message.message_id for item in ordered] == [
         "<fresh-bank@example.com>",
         "<old-newsletter@example.com>",
@@ -451,7 +452,7 @@ def test_p2_14_compaction_retains_old_unresolved_invoice_and_deadline() -> None:
     )
     messages = [first]
     meanings = [first_meaning]
-    state = EmailThreadState(derive_thread_identity(first).key)
+    state = email_runtime.RuntimeEmailThreadState(derive_thread_identity(first).key)
     state.update(first, first_meaning)
     for index in range(1, 50):
         message = _mail(
@@ -465,7 +466,7 @@ def test_p2_14_compaction_retains_old_unresolved_invoice_and_deadline() -> None:
         messages.append(message)
         meanings.append(meaning)
         state.update(message, meaning)
-    compact = email_module.compact_email_thread(state, messages, meanings, max_messages=5)
+    compact = email_runtime.compact_email_thread(state, messages, meanings, max_messages=5)
     assert compact.message_count == 50
     assert compact.commitment == "Transmettre la facture"
     assert compact.deadline == "2026-09-04"
