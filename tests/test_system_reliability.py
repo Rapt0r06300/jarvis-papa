@@ -1,3 +1,4 @@
+import zipfile
 from pathlib import Path
 
 from jarvis_papa.system_reliability import BackupManager, SessionRecovery, WindowsStartupManager
@@ -24,9 +25,31 @@ def test_backup_round_trip(tmp_path: Path) -> None:
     assert memory.read_bytes() == b"memory-state"
 
 
-def test_backup_rejects_path_traversal(tmp_path: Path) -> None:
-    import zipfile
+def test_backup_excludes_operational_security_state(tmp_path: Path) -> None:
+    runtime = tmp_path / "runtime"
+    updates = runtime / "updates"
+    updates.mkdir(parents=True)
+    (runtime / "jarvis_memory.sqlite3").write_bytes(b"memory")
+    (runtime / "kill-switch.json").write_text('{"active": true}', encoding="utf-8")
+    (runtime / "circuit-breakers.json").write_text("{}", encoding="utf-8")
+    (runtime / "desktop-session-active.json").write_text("{}", encoding="utf-8")
+    (runtime / "audit.jsonl").write_text("audit\n", encoding="utf-8")
+    (updates / "update-state.json").write_text("{}", encoding="utf-8")
 
+    created = BackupManager(tmp_path, runtime).create("security")
+
+    assert created.ok is True
+    with zipfile.ZipFile(created.path) as archive:
+        names = set(archive.namelist())
+    assert "runtime/jarvis_memory.sqlite3" in names
+    assert "runtime/kill-switch.json" not in names
+    assert "runtime/circuit-breakers.json" not in names
+    assert "runtime/desktop-session-active.json" not in names
+    assert "runtime/audit.jsonl" not in names
+    assert "runtime/updates/update-state.json" not in names
+
+
+def test_backup_rejects_path_traversal(tmp_path: Path) -> None:
     runtime = tmp_path / "runtime"
     runtime.mkdir()
     archive = tmp_path / "bad.zip"
