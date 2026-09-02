@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date
 from email.utils import parseaddr
 from enum import StrEnum
 
@@ -95,7 +95,7 @@ class EmailMessage:
             observed_at=self.received_at,
             locator=f"{self.source_id}:{self.folder}",
             content_hash=_sha256(
-                f"{self.sender}\n{self.subject}\n{self.body}".encode("utf-8")
+                f"{self.sender}\n{self.subject}\n{self.body}".encode()
             ),
         )
 
@@ -219,7 +219,7 @@ class StructuredEmailMeaning:
         provenance: ProvenanceRef,
     ) -> StructuredEmailMeaning:
         if not isinstance(payload, dict):
-            raise ValueError("model email meaning must be an object")
+            raise TypeError("model email meaning must be an object")
         allowed = {
             "summary",
             "intent",
@@ -599,28 +599,26 @@ def derive_thread_identity(message: EmailMessage) -> ThreadIdentity:
     if message.platform_thread_id:
         return ThreadIdentity(
             key="platform:"
-            + _sha256(message.platform_thread_id.casefold().encode("utf-8")),
+            + _sha256(message.platform_thread_id.casefold().encode()),
             confidence=1.0,
             method="platform_thread_id",
         )
     if message.references:
         root = message.references[0]
         return ThreadIdentity(
-            key="message:" + _sha256(root.casefold().encode("utf-8")),
+            key="message:" + _sha256(root.casefold().encode()),
             confidence=0.98,
             method="references_root",
         )
     if message.in_reply_to:
         return ThreadIdentity(
-            key="message:"
-            + _sha256(message.in_reply_to.casefold().encode("utf-8")),
+            key="message:" + _sha256(message.in_reply_to.casefold().encode()),
             confidence=0.95,
             method="in_reply_to",
         )
     if _looks_like_standard_message_id(message.message_id):
         return ThreadIdentity(
-            key="message:"
-            + _sha256(message.message_id.casefold().encode("utf-8")),
+            key="message:" + _sha256(message.message_id.casefold().encode()),
             confidence=0.9,
             method="message_id_root",
         )
@@ -629,13 +627,12 @@ def derive_thread_identity(message: EmailMessage) -> ThreadIdentity:
     if subject:
         fallback_material = f"{subject}|{_sender_domain(sender_address)}"
         return ThreadIdentity(
-            key="subject:" + _sha256(fallback_material.encode("utf-8")),
+            key="subject:" + _sha256(fallback_material.encode()),
             confidence=0.45,
             method="conservative_subject_domain_fallback",
         )
     return ThreadIdentity(
-        key="message:"
-        + _sha256(message.message_id.casefold().encode("utf-8")),
+        key="message:" + _sha256(message.message_id.casefold().encode()),
         confidence=0.7,
         method="generated_message_id_only",
     )
@@ -646,22 +643,25 @@ def normalize_model_deadline(raw: object) -> str | None:
         return None
     value = _clean_text(str(raw), 40)
     try:
-        parsed = datetime.strptime(value, "%Y-%m-%d")
+        return date.fromisoformat(value).isoformat()
     except ValueError as exc:
         raise ValueError("model deadline must use YYYY-MM-DD") from exc
-    return parsed.date().isoformat()
 
 
 def _normalize_rule_deadline(raw: str | None) -> str | None:
     if not raw:
         return None
     value = raw.strip()
-    for pattern in ("%d/%m/%Y", "%d-%m-%Y", "%d/%m/%y", "%d-%m-%y"):
-        try:
-            return datetime.strptime(value, pattern).date().isoformat()
-        except ValueError:
-            continue
-    return None
+    match = re.fullmatch(r"([0-3]?\d)[/-]([01]?\d)[/-](\d{2}|\d{4})", value)
+    if not match:
+        return None
+    day_value, month_value, year_value = (int(part) for part in match.groups())
+    if year_value < 100:
+        year_value += 2000
+    try:
+        return date(year_value, month_value, day_value).isoformat()
+    except ValueError:
+        return None
 
 
 def _extract_question(body: str) -> str:
@@ -736,11 +736,11 @@ def _string_tuple(value: object) -> tuple[str, ...]:
     if value is None:
         return ()
     if not isinstance(value, (list, tuple)):
-        raise ValueError("expected a list of strings")
+        raise TypeError("expected a list of strings")
     output: list[str] = []
     for item in value[:32]:
         if not isinstance(item, str):
-            raise ValueError("expected a list of strings")
+            raise TypeError("expected a list of strings")
         clean = _clean_text(item, 300)
         if clean:
             output.append(clean)
