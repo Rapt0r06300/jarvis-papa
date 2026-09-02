@@ -7,10 +7,12 @@ from pathlib import Path
 
 from jarvis_papa.config import settings
 from jarvis_papa.situations import (
+    ActionState,
     EntityRef,
     NormalizedEvent,
     SearchResult,
     Situation,
+    SituationStatus,
 )
 
 
@@ -22,7 +24,7 @@ class SituationStore:
     rollback safe: no existing 0.7.0 state is overwritten or reinterpreted.
     """
 
-    SCHEMA_VERSION = 1
+    SCHEMA_VERSION = 2
 
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or (settings.runtime_dir / "situations.sqlite3")
@@ -40,6 +42,7 @@ class SituationStore:
             "backup_compatible": True,
             "rollback_policy": "older_build_ignores_separate_situation_database",
             "idempotent_migrations": True,
+            "checkpoint_lanes": ("live", "backfill"),
         }
 
     def ingest_event(self, event: NormalizedEvent) -> bool:
@@ -214,20 +217,22 @@ class SituationStore:
         source: str,
         cursor: str,
         *,
+        lane: str = "live",
         source_version: str = "",
         evidence_hash: str = "",
     ) -> None:
         clean_source = " ".join(source.split()).strip()[:80]
-        if not clean_source:
-            raise ValueError("checkpoint source is required")
+        clean_lane = " ".join(lane.casefold().split()).strip()[:40]
+        if not clean_source or clean_lane not in {"live", "backfill"}:
+            raise ValueError("checkpoint requires source and a live/backfill lane")
         with sqlite3.connect(self.path, timeout=5) as connection:
             connection.execute("BEGIN IMMEDIATE")
             connection.execute(
                 """
                 INSERT INTO checkpoints(
-                    source, cursor, source_version, evidence_hash, updated_at
-                ) VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(source) DO UPDATE SET
+                    source, lane, cursor, source_version, evidence_hash, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(source, lane) DO UPDATE SET
                     cursor=excluded.cursor,
                     source_version=excluded.source_version,
                     evidence_hash=excluded.evidence_hash,
@@ -235,6 +240,7 @@ class SituationStore:
                 """,
                 (
                     clean_source,
+                    clean_lane,
                     str(cursor)[:1000],
                     str(source_version)[:120],
                     str(evidence_hash)[:128],
@@ -242,15 +248,19 @@ class SituationStore:
                 ),
             )
 
-    def get_checkpoint(self, source: str) -> dict[str, object] | None:
+    def get_checkpoint(self, source: str, *, lane: str = "live") -> dict[str, object] | None:
+        clean_source = " ".join(source.split()).strip()[:80]
+        clean_lane = " ".join(lane.casefold().split()).strip()[:40]
+        if clean_lane not in {"live", "backfill"}:
+            raise ValueError("checkpoint lane must be live or backfill")
         with sqlite3.connect(self.path, timeout=5) as connection:
             connection.row_factory = sqlite3.Row
             row = connection.execute(
                 """
-                SELECT source, cursor, source_version, evidence_hash, updated_at
-                FROM checkpoints WHERE source=? LIMIT 1
+                SELECT source, lane, cursor, source_version, evidence_hash, updated_at
+                FROM checkpoints WHERE source=? AND lane=? LIMIT 1
                 """,
-                (" ".join(source.split()).strip()[:80],),
+                (clean_source, clean_lane),
             ).fetchone()
         return dict(row) if row is not None else None
 
@@ -262,6 +272,21 @@ class SituationStore:
         }
         if not tokens:
             return []
+        action_query = bool(
+            tokens
+            & {
+                "faire",
+                "répondre",
+                "repondre",
+                "action",
+                "urgent",
+                "retirer",
+                "payer",
+                "vérifier",
+                "verifier",
+                "relancer",
+            }
+        )
         results: list[SearchResult] = []
         for situation in self.list_situations(limit=300):
             timeline = " ".join(item.summary for item in situation.timeline[-12:])
@@ -272,6 +297,12 @@ class SituationStore:
             score = self._token_score(tokens, haystack)
             if score <= 0:
                 continue
+            if situation.status is SituationStatus.ACTIVE:
+                score += 0.15
+            elif situation.status in {SituationStatus.COMPLETED, SituationStatus.ARCHIVED}:
+                score -= 0.25 if action_query else 0.08
+            if situation.action_state not in {ActionState.NO_ACTION, ActionState.READ_ONLY}:
+                score += 0.12 if action_query else 0.03
             provenance = tuple(
                 f"{item.source}:{item.source_id}" for item in situation.evidence[-8:]
             )
@@ -281,7 +312,7 @@ class SituationStore:
                     object_id=situation.situation_id,
                     title=situation.title,
                     snippet=timeline[-700:] or situation.state,
-                    score=score,
+                    score=round(max(0.0, score), 4),
                     provenance=provenance,
                 )
             )
@@ -323,12 +354,8 @@ class SituationStore:
                 "schema_version": int(connection.execute("PRAGMA user_version").fetchone()[0]),
                 "events": int(connection.execute("SELECT COUNT(*) FROM events").fetchone()[0]),
                 "entities": int(connection.execute("SELECT COUNT(*) FROM entities").fetchone()[0]),
-                "situations": int(
-                    connection.execute("SELECT COUNT(*) FROM situations").fetchone()[0]
-                ),
-                "checkpoints": int(
-                    connection.execute("SELECT COUNT(*) FROM checkpoints").fetchone()[0]
-                ),
+                "situations": int(connection.execute("SELECT COUNT(*) FROM situations").fetchone()[0]),
+                "checkpoints": int(connection.execute("SELECT COUNT(*) FROM checkpoints").fetchone()[0]),
             }
 
     @staticmethod
@@ -362,67 +389,103 @@ class SituationStore:
             if current > self.SCHEMA_VERSION:
                 raise RuntimeError("situation database is newer than this Jarvis build")
             if current == 0:
+                self._create_schema_v2(connection)
+                self._record_migration(connection, 1)
+                self._record_migration(connection, 2)
+                connection.execute("PRAGMA user_version=2")
+                current = 2
+            if current == 1:
+                connection.execute("BEGIN IMMEDIATE")
                 connection.executescript(
                     """
-                    CREATE TABLE IF NOT EXISTS migration_history(
-                        version INTEGER PRIMARY KEY,
-                        applied_at REAL NOT NULL
-                    );
-                    CREATE TABLE IF NOT EXISTS events(
-                        identity_key TEXT PRIMARY KEY,
+                    ALTER TABLE checkpoints RENAME TO checkpoints_v1;
+                    CREATE TABLE checkpoints(
                         source TEXT NOT NULL,
-                        source_event_id TEXT NOT NULL,
-                        event_type TEXT NOT NULL,
-                        occurred_at REAL NOT NULL,
-                        observed_at REAL NOT NULL,
-                        payload_json TEXT NOT NULL,
-                        created_at REAL NOT NULL
-                    );
-                    CREATE INDEX IF NOT EXISTS events_source_observed
-                        ON events(source, observed_at DESC);
-                    CREATE TABLE IF NOT EXISTS entities(
-                        entity_id TEXT PRIMARY KEY,
-                        kind TEXT NOT NULL,
-                        payload_json TEXT NOT NULL,
-                        updated_at REAL NOT NULL
-                    );
-                    CREATE TABLE IF NOT EXISTS situations(
-                        situation_id TEXT PRIMARY KEY,
-                        domain TEXT NOT NULL,
-                        title TEXT NOT NULL,
-                        status TEXT NOT NULL,
-                        state TEXT NOT NULL,
-                        confidence REAL NOT NULL,
-                        payload_json TEXT NOT NULL,
-                        created_at REAL NOT NULL,
-                        updated_at REAL NOT NULL
-                    );
-                    CREATE INDEX IF NOT EXISTS situations_updated
-                        ON situations(updated_at DESC);
-                    CREATE TABLE IF NOT EXISTS correlation_keys(
-                        key TEXT PRIMARY KEY,
-                        situation_id TEXT NOT NULL,
-                        priority INTEGER NOT NULL,
-                        created_at REAL NOT NULL,
-                        FOREIGN KEY(situation_id) REFERENCES situations(situation_id)
-                            ON DELETE CASCADE
-                    );
-                    CREATE INDEX IF NOT EXISTS correlation_situation
-                        ON correlation_keys(situation_id, priority);
-                    CREATE TABLE IF NOT EXISTS checkpoints(
-                        source TEXT PRIMARY KEY,
+                        lane TEXT NOT NULL DEFAULT 'live',
                         cursor TEXT NOT NULL,
                         source_version TEXT NOT NULL,
                         evidence_hash TEXT NOT NULL,
-                        updated_at REAL NOT NULL
+                        updated_at REAL NOT NULL,
+                        PRIMARY KEY(source, lane)
                     );
+                    INSERT INTO checkpoints(
+                        source, lane, cursor, source_version, evidence_hash, updated_at
+                    )
+                    SELECT source, 'live', cursor, source_version, evidence_hash, updated_at
+                    FROM checkpoints_v1;
+                    DROP TABLE checkpoints_v1;
                     """
                 )
-                connection.execute(
-                    "INSERT OR IGNORE INTO migration_history(version, applied_at) VALUES (?, ?)",
-                    (self.SCHEMA_VERSION, time.time()),
-                )
-                connection.execute(f"PRAGMA user_version={self.SCHEMA_VERSION}")
+                self._record_migration(connection, 2)
+                connection.execute("PRAGMA user_version=2")
+
+    @staticmethod
+    def _create_schema_v2(connection: sqlite3.Connection) -> None:
+        connection.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS migration_history(
+                version INTEGER PRIMARY KEY,
+                applied_at REAL NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS events(
+                identity_key TEXT PRIMARY KEY,
+                source TEXT NOT NULL,
+                source_event_id TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                occurred_at REAL NOT NULL,
+                observed_at REAL NOT NULL,
+                payload_json TEXT NOT NULL,
+                created_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS events_source_observed
+                ON events(source, observed_at DESC);
+            CREATE TABLE IF NOT EXISTS entities(
+                entity_id TEXT PRIMARY KEY,
+                kind TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                updated_at REAL NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS situations(
+                situation_id TEXT PRIMARY KEY,
+                domain TEXT NOT NULL,
+                title TEXT NOT NULL,
+                status TEXT NOT NULL,
+                state TEXT NOT NULL,
+                confidence REAL NOT NULL,
+                payload_json TEXT NOT NULL,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS situations_updated
+                ON situations(updated_at DESC);
+            CREATE TABLE IF NOT EXISTS correlation_keys(
+                key TEXT PRIMARY KEY,
+                situation_id TEXT NOT NULL,
+                priority INTEGER NOT NULL,
+                created_at REAL NOT NULL,
+                FOREIGN KEY(situation_id) REFERENCES situations(situation_id)
+                    ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS correlation_situation
+                ON correlation_keys(situation_id, priority);
+            CREATE TABLE IF NOT EXISTS checkpoints(
+                source TEXT NOT NULL,
+                lane TEXT NOT NULL DEFAULT 'live',
+                cursor TEXT NOT NULL,
+                source_version TEXT NOT NULL,
+                evidence_hash TEXT NOT NULL,
+                updated_at REAL NOT NULL,
+                PRIMARY KEY(source, lane)
+            );
+            """
+        )
+
+    @staticmethod
+    def _record_migration(connection: sqlite3.Connection, version: int) -> None:
+        connection.execute(
+            "INSERT OR IGNORE INTO migration_history(version, applied_at) VALUES (?, ?)",
+            (version, time.time()),
+        )
 
 
 situation_store = SituationStore()
