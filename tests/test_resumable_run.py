@@ -68,7 +68,7 @@ def test_p3_07_long_synthetic_worker_keeps_qt_event_loop_responsive() -> None:
     heartbeat = {"seen": False}
     finished = {"seen": False}
 
-    window.begin_activity("Test long en arrière-plan", speak=False)
+    window.begin_activity("Test long en arrière-plan")
     QTimer.singleShot(20, lambda: heartbeat.__setitem__("seen", True))
     window._worker(
         lambda: (time.sleep(0.25), {"ok": True})[1],
