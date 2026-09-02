@@ -2,16 +2,12 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from enum import StrEnum
-from typing import Callable, Protocol
+from typing import ClassVar, Protocol
 
-from jarvis_papa.governance import (
-    ActionContract,
-    PolicyResult,
-    RiskLevel,
-    policy_kernel,
-)
+from jarvis_papa.governance import ActionContract, PolicyResult, RiskLevel, policy_kernel
 from jarvis_papa.situation_store import SituationStore, situation_store
 from jarvis_papa.situations import (
     EntityRef,
@@ -109,7 +105,7 @@ class CancellationToken:
 
 
 class SourceAdapter(Protocol):
-    """Read-only source contract. Mutations deliberately live elsewhere."""
+    """Read-only source contract; mutation deliberately lives elsewhere."""
 
     source_name: str
 
@@ -125,12 +121,7 @@ class SourceAdapter(Protocol):
 
 
 class ThunderbirdBridgeAdapter:
-    """Read-only capability mapping for the existing Thunderbird native bridge.
-
-    Mail ingestion itself remains owned by the current Thunderbird/native-host
-    pipeline. This adapter exposes health/capability state to the situation engine
-    without adding any new write privilege.
-    """
+    """Read-only mapping of the existing Thunderbird native bridge."""
 
     source_name = "thunderbird"
 
@@ -168,8 +159,18 @@ Proposer = Callable[[Situation], tuple[SituationProposal, ...]]
 StageListener = Callable[[StageEvent], None]
 
 
+def _no_entities(event: NormalizedEvent) -> tuple[EntityRef, ...]:
+    _ = event
+    return ()
+
+
+def _no_proposals(situation: Situation) -> tuple[SituationProposal, ...]:
+    _ = situation
+    return ()
+
+
 class SituationOrchestrator:
-    """Incremental situation pipeline with deterministic failure boundaries."""
+    """Incremental INGEST→...→PROPOSE pipeline with bounded failure domains."""
 
     def __init__(
         self,
@@ -183,8 +184,8 @@ class SituationOrchestrator:
         self.store = store or situation_store
         self.adapters = adapters
         self.classifier = classifier or self._classify
-        self.extractor = extractor or (lambda event: ())
-        self.proposer = proposer or (lambda situation: ())
+        self.extractor = extractor or _no_entities
+        self.proposer = proposer or _no_proposals
 
     def run(
         self,
@@ -216,7 +217,7 @@ class SituationOrchestrator:
             emit(PipelineStage.INGEST, source, "Vérification de la source.")
             try:
                 health = adapter.health()
-            except (OSError, RuntimeError, ValueError, TypeError) as exc:
+            except (OSError, RuntimeError, TypeError, ValueError) as exc:
                 degraded += 1
                 errors.append(f"{source}: health {type(exc).__name__}")
                 continue
@@ -232,7 +233,7 @@ class SituationOrchestrator:
             cursor = str(checkpoint.get("cursor") or "") if checkpoint else ""
             try:
                 batch = adapter.sync(cursor or None)
-            except (OSError, RuntimeError, ValueError, TypeError) as exc:
+            except (OSError, RuntimeError, TypeError, ValueError) as exc:
                 errors.append(f"{source}: sync {type(exc).__name__}")
                 continue
 
@@ -241,12 +242,11 @@ class SituationOrchestrator:
                 if token.cancelled:
                     break
                 emit(PipelineStage.NORMALIZE, source, event.event_type)
+                batch_evidence.append(event.identity_key)
                 if not self.store.ingest_event(event):
                     duplicates += 1
-                    batch_evidence.append(event.identity_key)
                     continue
                 processed += 1
-                batch_evidence.append(event.identity_key)
 
                 emit(PipelineStage.CLASSIFY, source, event.event_type)
                 domain = self.classifier(event)
@@ -263,7 +263,7 @@ class SituationOrchestrator:
                     situation = Situation.create(
                         event.payload_summary or event.event_type.replace("_", " "),
                         domain=domain,
-                        confidence=event.confidence,
+                        confidence=0.0,
                     )
                 situation.add_event(event)
                 for entity in entities:
@@ -278,9 +278,11 @@ class SituationOrchestrator:
 
                 emit(PipelineStage.PROPOSE, source, "Préparation des propositions.")
                 for proposal in self.proposer(situation):
-                    if any(item.proposal_id == proposal.proposal_id for item in situation.proposals):
-                        continue
-                    situation.proposals.append(proposal)
+                    if not any(
+                        item.proposal_id == proposal.proposal_id
+                        for item in situation.proposals
+                    ):
+                        situation.proposals.append(proposal)
                 for task in overdue_tasks(situation):
                     situation.add_task(task)
 
@@ -326,14 +328,9 @@ class SituationOrchestrator:
 
 
 class SituationGovernanceBridge:
-    """Converts situation actions to existing policy/transaction contracts.
+    """Bridge to existing policy and transaction systems, never an executor."""
 
-    There is intentionally no execute method here. The situation engine can plan,
-    evaluate and journal an action, but the existing controlled executor remains
-    the only component allowed to perform external mutations.
-    """
-
-    _RISK = {
+    _RISK: ClassVar[dict[str, RiskLevel]] = {
         "safe": RiskLevel.SAFE,
         "low": RiskLevel.LOW,
         "medium": RiskLevel.MEDIUM,
@@ -345,12 +342,11 @@ class SituationGovernanceBridge:
         self.journal = journal or transaction_journal
 
     def contract_for(self, action: SituationAction) -> ActionContract:
-        risk = self._RISK.get(action.risk.casefold(), RiskLevel.HIGH)
         return ActionContract.create(
             action_key=action.action_key,
             description=action.description,
             binding=action.binding,
-            risk=risk,
+            risk=self._RISK.get(action.risk.casefold(), RiskLevel.HIGH),
             read_only=action.read_only,
             reversible=action.reversible,
             expected_proof=action.expected_proof,
