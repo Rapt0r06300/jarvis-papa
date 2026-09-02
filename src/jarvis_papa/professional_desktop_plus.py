@@ -4,10 +4,12 @@ import sys
 from functools import partial
 
 from PySide6.QtCore import QLockFile, QTimer
-from PySide6.QtGui import QAction, QFont
+from PySide6.QtGui import QAction, QCloseEvent, QFont
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from jarvis_papa.config import settings
+from jarvis_papa.memory_center_dialog import MemoryCenterDialog
+from jarvis_papa.overlay import GlobalOverlayHotkey, JarvisOverlay
 from jarvis_papa.professional_desktop import BackendService, ProfessionalMainWindow
 
 
@@ -16,10 +18,22 @@ class JarvisProfessionalWindow(ProfessionalMainWindow):
 
     def __init__(self) -> None:
         super().__init__()
+        self._memory_dialog: MemoryCenterDialog | None = None
         self._install_assistance_menu()
+        self._install_overlay()
 
     def _install_assistance_menu(self) -> None:
         menu = self.menuBar().addMenu("Aide")
+
+        memory = QAction("Ce que Jarvis retient", self)
+        memory.triggered.connect(self.open_memory_center)
+        menu.addAction(memory)
+
+        overlay = QAction("Afficher Jarvis rapidement (Ctrl+Alt+J)", self)
+        overlay.triggered.connect(self.toggle_overlay)
+        menu.addAction(overlay)
+
+        menu.addSeparator()
 
         repair = QAction("Vérifier et réparer Jarvis", self)
         repair.triggered.connect(self.repair_jarvis)
@@ -28,6 +42,105 @@ class JarvisProfessionalWindow(ProfessionalMainWindow):
         voice = QAction("Vérifier la voix de Jarvis", self)
         voice.triggered.connect(self.check_voice_quality)
         menu.addAction(voice)
+
+        menu.addSeparator()
+
+        stop = QAction("Arrêter Jarvis immédiatement", self)
+        stop.triggered.connect(self.emergency_stop)
+        menu.addAction(stop)
+
+        resume = QAction("Réactiver Jarvis après un arrêt", self)
+        resume.triggered.connect(self.clear_emergency_stop)
+        menu.addAction(resume)
+
+    def _install_overlay(self) -> None:
+        self.overlay = JarvisOverlay(
+            self,
+            on_query=self._overlay_query,
+            on_mail=lambda: self._overlay_query("Quels sont mes mails importants ?"),
+            on_documents=lambda: self._overlay_query("Retrouve mes documents importants."),
+            on_stop=self.emergency_stop,
+        )
+        self.overlay_hotkey = GlobalOverlayHotkey(self.toggle_overlay)
+
+    def toggle_overlay(self) -> None:
+        self.overlay.toggle()
+
+    def _overlay_query(self, text: str) -> None:
+        self.show()
+        self.raise_()
+        self.activateWindow()
+        self.chat_input.setText(text)
+        self.send_chat()
+
+    def open_memory_center(self) -> None:
+        if self._memory_dialog is None:
+            self._memory_dialog = MemoryCenterDialog(self)
+            self._memory_dialog.finished.connect(self._memory_dialog_closed)
+        self._memory_dialog.show()
+        self._memory_dialog.raise_()
+        self._memory_dialog.activateWindow()
+        self._memory_dialog.refresh()
+
+    def _memory_dialog_closed(self, _result: int) -> None:
+        self._memory_dialog = None
+
+    def emergency_stop(self) -> None:
+        self.cancel_chat()
+        self.begin_activity("J'arrête immédiatement les nouvelles actions de Jarvis.", speak=False)
+        self._worker(
+            lambda: self.api.request(
+                "POST",
+                "/api/intelligence/kill-switch",
+                payload={"reason": "Arrêt immédiat demandé depuis l'interface."},
+                timeout=3,
+            ),
+            self._emergency_stop_result,
+            on_error=lambda _message: self.finish_partial(
+                "J'ai arrêté la conversation et la voix, mais je n'ai pas pu confirmer le verrou global."
+            ),
+        )
+
+    def _emergency_stop_result(self, result: dict[str, object]) -> None:
+        if bool(result.get("ok")):
+            self.finish_activity(
+                "Jarvis est arrêté pour les actions. Tu peux toujours consulter les informations.",
+                speak=False,
+            )
+        else:
+            self.finish_partial(str(result.get("detail") or "Le verrou global n'est pas confirmé."))
+
+    def clear_emergency_stop(self) -> None:
+        self._worker(
+            lambda: self.api.request("GET", "/api/intelligence/kill-switch/clear-plan", timeout=3),
+            self._clear_stop_plan,
+        )
+
+    def _clear_stop_plan(self, plan: dict[str, object]) -> None:
+        if not bool(plan.get("ok")):
+            self._task_failed("Je ne peux pas préparer la réactivation.")
+            return
+        description = str(plan.get("description") or "Réactiver les actions de Jarvis.")
+        binding = plan.get("binding") if isinstance(plan.get("binding"), dict) else {}
+        token = self.authorize(
+            str(plan.get("action_key") or "jarvis.kill_switch.clear"),
+            description,
+            binding,
+        )
+        if not token:
+            return
+        self._worker(
+            lambda: self.api.request(
+                "POST",
+                "/api/intelligence/kill-switch/clear",
+                payload={"authorization_token": token},
+                timeout=4,
+            ),
+            lambda result: self.finish_activity(
+                str(result.get("detail") or "Jarvis a été réactivé."),
+                success=bool(result.get("ok")),
+            ),
+        )
 
     def handle_option(self, card: dict[str, object], option: dict[str, object]) -> None:
         if str(option.get("id") or "") == "send-prepared":
@@ -337,6 +450,10 @@ class JarvisProfessionalWindow(ProfessionalMainWindow):
             self.finish_partial(detail)
         else:
             self.finish_activity(detail, success=False)
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        self.overlay_hotkey.close()
+        super().closeEvent(event)
 
 
 def run() -> None:
