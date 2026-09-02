@@ -20,6 +20,24 @@ def _prepare_windowed_runtime() -> None:
         sys.stderr = log
 
 
+def _bundle_uvicorn_runtime_modules() -> None:
+    """Make Uvicorn's dynamically selected runtime modules visible to PyInstaller."""
+
+    if not getattr(sys, "frozen", False):
+        return
+    from uvicorn.lifespan import on as uvicorn_lifespan_on
+    from uvicorn.loops import auto as uvicorn_loop_auto
+    from uvicorn.protocols.http import auto as uvicorn_http_auto
+    from uvicorn.protocols.websockets import auto as uvicorn_websocket_auto
+
+    _ = (
+        uvicorn_lifespan_on,
+        uvicorn_loop_auto,
+        uvicorn_http_auto,
+        uvicorn_websocket_auto,
+    )
+
+
 def _set_windows_app_identity() -> None:
     if sys.platform != "win32":
         return
@@ -32,6 +50,7 @@ def _set_windows_app_identity() -> None:
 
 
 _prepare_windowed_runtime()
+_bundle_uvicorn_runtime_modules()
 _set_windows_app_identity()
 
 from jarvis_papa.restore_coordinator import restore_coordinator
