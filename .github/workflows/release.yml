@@ -13,7 +13,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout release state with Git LFS
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           lfs: true
@@ -90,6 +90,11 @@ jobs:
           test -f installer/Jarvis-Setup.exe.sha256
           test -f installer/deliverables.sha256
           test -f installer/signing-status.txt
+          filter=$(git check-attr filter -- installer/Jarvis-Setup.exe | awk '{print $3}')
+          if [ "$filter" != "lfs" ]; then
+            echo "Release blocked: installer is not covered by the Git LFS contract." >&2
+            exit 1
+          fi
           headline=$(head -n 1 installer/signing-status.txt | tr -d '\r\n')
           if [ "$headline" != "SIGNED" ]; then
             echo "Release blocked: repository installer is not Authenticode signed ($headline)" >&2
