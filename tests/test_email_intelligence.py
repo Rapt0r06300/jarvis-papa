@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import time
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import pytest
 
+import jarvis_papa.email_intelligence as email_module
 from jarvis_papa.email_intelligence import (
     EMAIL_MEANING_SCHEMA_VERSION,
     EMAIL_TAXONOMY_VERSION,
@@ -15,6 +18,7 @@ from jarvis_papa.email_intelligence import (
     derive_thread_identity,
     email_intelligence,
 )
+from jarvis_papa.situation_store import SituationStore
 from jarvis_papa.situations import ActionState, Responsibility
 
 
@@ -257,3 +261,215 @@ def test_p2_06_thread_state_question_reply_thanks_has_no_open_reply_obligation()
 def test_email_message_requires_stable_identity_and_positive_time() -> None:
     with pytest.raises(ValueError):
         EmailMessage("", "", "", "", "", time.time())
+
+
+def test_p2_07_commitment_reuses_engine_and_normalizes_relative_deadline() -> None:
+    observed = datetime(2026, 9, 2, 10, 0, tzinfo=ZoneInfo("Europe/Paris")).timestamp()
+    message = _mail(
+        "<deadline@example.com>",
+        sender="Assurance <agent@example.com>",
+        subject="Réponse requise",
+        body="Merci de répondre avant vendredi avec votre attestation.",
+        received_at=observed,
+    )
+    state = EmailThreadState(derive_thread_identity(message).key)
+    state.update(message, email_intelligence.meaning_from_rules(message))
+    assert state.commitments
+    commitment = state.commitments[-1]
+    assert commitment.actor == "father"
+    assert "répondre" in commitment.obligation.casefold()
+    assert commitment.due_date == "2026-09-04"
+    assert commitment.source_wording.casefold() == "avant vendredi"
+    assert commitment.confidence >= 0.75
+    assert commitment.provenance.source_id == "<deadline@example.com>"
+
+
+def test_p2_08_future_father_promise_keeps_responsibility_on_father() -> None:
+    root = _mail(
+        "<ask@example.com>",
+        body="Pouvez-vous envoyer le justificatif ?",
+    )
+    promise = _mail(
+        "<promise@example.com>",
+        sender="Robert <robert@example.com>",
+        subject="Re: justificatif",
+        body="Je vous l'enverrai demain.",
+        references=("<ask@example.com>",),
+        sender_is_father=True,
+        received_at=root.received_at + 60,
+    )
+    state = EmailThreadState(derive_thread_identity(root).key)
+    state.update(root, email_intelligence.meaning_from_rules(root))
+    state.update(promise, email_intelligence.meaning_from_rules(promise))
+    assert state.responsibility is Responsibility.FATHER_MUST_ACT
+    assert state.latest_state == "father_committed"
+    assert state.commitments[-1].actor == "father"
+
+
+def test_p2_09_newsletters_are_silent_but_bank_alert_stays_visible() -> None:
+    newsletters = [
+        _mail(
+            f"<nl-{index}@example.com>",
+            subject="Newsletter offres",
+            body="Découvrez les nouveautés. Unsubscribe.",
+            list_unsubscribe=True,
+        )
+        for index in range(27)
+    ]
+    bank = _mail(
+        "<bank@example.com>",
+        sender="Banque <security@bank.example>",
+        subject="Alerte sécurité carte bancaire",
+        body="Une opération inhabituelle nécessite une vérification.",
+    )
+    newsletter_decisions = [
+        email_module.briefing_decision(message, email_intelligence.triage(message))
+        for message in newsletters
+    ]
+    bank_decision = email_module.briefing_decision(bank, email_intelligence.triage(bank))
+    assert all(
+        item.disposition is email_module.BriefingDisposition.IGNORE_FOR_BRIEFING
+        for item in newsletter_decisions
+    )
+    assert bank_decision.disposition is email_module.BriefingDisposition.ACTION_REQUIRED
+    assert all(item.mailbox_mutation_allowed is False for item in newsletter_decisions)
+    assert bank_decision.mailbox_mutation_allowed is False
+
+
+def test_p2_10_lookalike_bank_domain_is_evidence_not_fraud_verdict() -> None:
+    message = _mail(
+        "<spoof@example.com>",
+        sender="Crédit Agricole <alerte@credit-agric0le.example>",
+        subject="URGENT sécurité compte",
+        body="Vérifiez immédiatement: http://credit-agricole-secure.example/login",
+    )
+    assessment = email_module.assess_email_trust(message)
+    kinds = {item.kind for item in assessment.signals}
+    assert "brand_domain_mismatch" in kinds
+    assert "suspicious_link" in kinds
+    assert "urgency_cue" in kinds
+    assert assessment.requires_verification is True
+    assert assessment.certainty < 1.0
+    assert email_module.domain_matches_official(
+        "credit-agricole.fr", ("credit-agricole.fr", "www.credit-agricole.fr")
+    )
+
+
+def test_p2_11_html_sanitizer_blocks_active_and_remote_content() -> None:
+    message = _mail("<html@example.com>")
+    html = (
+        "<html><body>Bonjour<script>steal()</script>"
+        "<img src='https://tracker.example/pixel.gif'>"
+        "<a href='http://example.net/dossier'>Voir le dossier</a></body></html>"
+    )
+    sanitized = email_module.sanitize_email_html(html, provenance=message.provenance)
+    assert "steal" not in sanitized.text
+    assert "Bonjour" in sanitized.text
+    assert sanitized.blocked_active_count >= 1
+    assert sanitized.blocked_remote_count >= 1
+    assert sanitized.links[0].url == "http://example.net/dossier"
+    assert sanitized.links[0].trusted is False
+    assert sanitized.links[0].provenance.source_id == "<html@example.com>"
+
+
+def test_p2_12_backfill_is_bounded_read_only_and_checkpointed(tmp_path) -> None:
+    now = datetime(2026, 9, 2, 12, 0, tzinfo=ZoneInfo("Europe/Paris")).timestamp()
+    policy = email_module.EmailBackfillPolicy()
+    plan = policy.plan(now)
+    assert plan.window_days <= 14
+    assert plan.max_messages <= 500
+    assert plan.read_only is True
+    assert plan.lane == "backfill"
+    assert policy.next_window_days(plan.window_days) > plan.window_days
+    store = SituationStore(tmp_path / "situations.sqlite3")
+    email_module.save_email_backfill_checkpoint(
+        store,
+        "cursor-42",
+        source_version="p2b",
+        evidence_hash="abc123",
+    )
+    checkpoint = store.get_checkpoint("email", lane="backfill")
+    assert checkpoint is not None
+    assert checkpoint["cursor"] == "cursor-42"
+    assert checkpoint["source_version"] == "p2b"
+
+
+def test_p2_13_fresh_evidence_backed_bank_mail_preempts_backfill_without_drops() -> None:
+    newsletter = _mail(
+        "<old-newsletter@example.com>",
+        subject="Newsletter",
+        body="Offres de la semaine. Unsubscribe.",
+        list_unsubscribe=True,
+        received_at=1_779_000_000.0,
+    )
+    bank = _mail(
+        "<fresh-bank@example.com>",
+        sender="Banque <security@bank.example>",
+        subject="Alerte sécurité carte bancaire",
+        body="Vérification requise pour une opération inhabituelle.",
+        received_at=1_780_000_500.0,
+    )
+    items = [
+        email_module.EmailWorkItem(
+            newsletter,
+            email_intelligence.triage(newsletter),
+            lane="backfill",
+            sequence=1,
+        ),
+        email_module.EmailWorkItem(
+            bank,
+            email_intelligence.triage(bank),
+            lane="live",
+            sequence=2,
+        ),
+    ]
+    ordered = email_module.prioritize_email_work(items)
+    assert [item.message.message_id for item in ordered] == [
+        "<fresh-bank@example.com>",
+        "<old-newsletter@example.com>",
+    ]
+    assert len(ordered) == len(items)
+
+
+def test_p2_14_compaction_retains_old_unresolved_invoice_and_deadline() -> None:
+    first = _mail(
+        "<invoice-0@example.com>",
+        subject="Facture manquante",
+        body="Merci de transmettre la facture avant le 04/09/2026.",
+    )
+    first_meaning = StructuredEmailMeaning(
+        summary="Facture demandée",
+        intent=EmailIntent.ADMIN,
+        action_state=ActionState.DOCUMENT_REQUIRED,
+        importance=80,
+        deadline="2026-09-04",
+        requested_action="Transmettre la facture",
+        references=("document:facture",),
+        confidence=0.95,
+        provenance=(first.provenance,),
+        entities=("document:facture",),
+    )
+    messages = [first]
+    meanings = [first_meaning]
+    state = EmailThreadState(derive_thread_identity(first).key)
+    state.update(first, first_meaning)
+    for index in range(1, 50):
+        message = _mail(
+            f"<invoice-{index}@example.com>",
+            subject="Re: Facture manquante",
+            body=f"Information intermédiaire {index}.",
+            references=("<invoice-0@example.com>",),
+            received_at=first.received_at + index,
+        )
+        meaning = email_intelligence.meaning_from_rules(message)
+        messages.append(message)
+        meanings.append(meaning)
+        state.update(message, meaning)
+    compact = email_module.compact_email_thread(state, messages, meanings, max_messages=5)
+    assert compact.message_count == 50
+    assert compact.commitment == "Transmettre la facture"
+    assert compact.deadline == "2026-09-04"
+    assert "document:facture" in compact.entities
+    assert compact.provenance
+    assert len(compact.recent_messages) <= 5
+    assert compact.recent_messages[-1]["message_id"] == "<invoice-49@example.com>"
