@@ -138,7 +138,7 @@ class RuntimeEmailThreadState(EmailThreadState):
     def update(self, message: EmailMessage, meaning: StructuredEmailMeaning) -> None:
         if message.message_id in self.message_ids:
             return
-        super().update(message, meaning)
+        EmailThreadState.update(self, message, meaning)
         for entity in meaning.entities:
             if entity not in self.entities:
                 self.entities.append(entity)
