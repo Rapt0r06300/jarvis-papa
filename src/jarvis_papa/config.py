@@ -47,6 +47,7 @@ class Settings(BaseSettings):
     host: str = "127.0.0.1"
     port: int = 8765
     log_level: str = "INFO"
+    data_dir: Path = _DATA_DIR
     runtime_dir: Path = _RUNTIME_DIR
 
     speech_enabled: bool = True

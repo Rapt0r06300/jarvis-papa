@@ -5,12 +5,13 @@ from functools import partial
 
 from PySide6.QtCore import QLockFile, QTimer
 from PySide6.QtGui import QAction, QCloseEvent, QFont
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtWidgets import QApplication, QMessageBox, QSystemTrayIcon
 
 from jarvis_papa.config import settings
 from jarvis_papa.memory_center_dialog import MemoryCenterDialog
 from jarvis_papa.overlay import GlobalOverlayHotkey, JarvisOverlay
 from jarvis_papa.professional_desktop import BackendService, ProfessionalMainWindow
+from jarvis_papa.system_reliability import backup_manager, session_recovery
 
 
 class JarvisProfessionalWindow(ProfessionalMainWindow):
@@ -19,8 +20,12 @@ class JarvisProfessionalWindow(ProfessionalMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self._memory_dialog: MemoryCenterDialog | None = None
+        self._tray_icon: QSystemTrayIcon | None = None
+        self._proactive_poll_busy = False
+        self.last_proactive_event = 0
         self._install_assistance_menu()
         self._install_overlay()
+        self._install_notifications()
 
     def _install_assistance_menu(self) -> None:
         menu = self.menuBar().addMenu("Aide")
@@ -43,6 +48,18 @@ class JarvisProfessionalWindow(ProfessionalMainWindow):
         voice.triggered.connect(self.check_voice_quality)
         menu.addAction(voice)
 
+        backup = QAction("Créer une sauvegarde maintenant", self)
+        backup.triggered.connect(self.create_backup)
+        menu.addAction(backup)
+
+        restore = QAction("Restaurer la dernière sauvegarde", self)
+        restore.triggered.connect(self.restore_latest_backup)
+        menu.addAction(restore)
+
+        startup = QAction("Configurer le démarrage avec Windows", self)
+        startup.triggered.connect(self.configure_startup)
+        menu.addAction(startup)
+
         menu.addSeparator()
 
         stop = QAction("Arrêter Jarvis immédiatement", self)
@@ -62,6 +79,60 @@ class JarvisProfessionalWindow(ProfessionalMainWindow):
             on_stop=self.emergency_stop,
         )
         self.overlay_hotkey = GlobalOverlayHotkey(self.toggle_overlay)
+
+    def _install_notifications(self) -> None:
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            return
+        self._tray_icon = QSystemTrayIcon(self.windowIcon(), self)
+        self._tray_icon.setToolTip("Jarvis Papa")
+        self._tray_icon.messageClicked.connect(self._show_from_notification)
+        self._tray_icon.show()
+        self.proactive_timer = QTimer(self)
+        self.proactive_timer.setInterval(5000)
+        self.proactive_timer.timeout.connect(self._poll_proactive_events)
+        self.proactive_timer.start()
+        QTimer.singleShot(1200, self._poll_proactive_events)
+
+    def _show_from_notification(self) -> None:
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def _poll_proactive_events(self) -> None:
+        if self._tray_icon is None or self._proactive_poll_busy:
+            return
+        self._proactive_poll_busy = True
+        self._worker(
+            lambda: self.api.request(
+                "GET",
+                f"/api/intelligence/events?after={self.last_proactive_event}",
+                timeout=3,
+            ),
+            self._proactive_events,
+            on_error=self._proactive_events_failed,
+        )
+
+    def _proactive_events_failed(self, _message: str) -> None:
+        self._proactive_poll_busy = False
+
+    def _proactive_events(self, payload: dict[str, object]) -> None:
+        self._proactive_poll_busy = False
+        events = payload.get("events") if isinstance(payload.get("events"), list) else []
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+            self.last_proactive_event = max(
+                self.last_proactive_event,
+                int(event.get("event_id") or 0),
+            )
+            level = str(event.get("level") or "normal").casefold()
+            if level not in {"urgent", "important"} or self._tray_icon is None:
+                continue
+            title = str(event.get("title") or "Jarvis")[:180]
+            detail = str(
+                event.get("detail") or "Une information importante demande ton attention."
+            )[:600]
+            self._tray_icon.showMessage(title, detail)
 
     def toggle_overlay(self) -> None:
         self.overlay.toggle()
@@ -84,6 +155,136 @@ class JarvisProfessionalWindow(ProfessionalMainWindow):
 
     def _memory_dialog_closed(self, _result: int) -> None:
         self._memory_dialog = None
+
+    def create_backup(self) -> None:
+        self.begin_activity("Je crée une sauvegarde locale de mes données durables.", speak=False)
+        self._worker(
+            lambda: self.api.request("POST", "/api/maintenance/backups", payload={}, timeout=15),
+            self._backup_created,
+        )
+
+    def _backup_created(self, result: dict[str, object]) -> None:
+        detail = str(result.get("detail") or "Sauvegarde terminée.")
+        if bool(result.get("ok")):
+            self.finish_activity(detail, speak=False)
+        else:
+            self.finish_activity(detail, success=False, speak=False)
+
+    def restore_latest_backup(self) -> None:
+        self.begin_activity("Je cherche la dernière sauvegarde Jarvis disponible.", speak=False)
+        self._worker(
+            lambda: self.api.request("GET", "/api/maintenance/backups", timeout=5),
+            self._restore_backups_ready,
+        )
+
+    def _restore_backups_ready(self, payload: dict[str, object]) -> None:
+        items = payload.get("items") if isinstance(payload.get("items"), list) else []
+        path = str(items[0]) if items else ""
+        if not path:
+            self.finish_activity("Aucune sauvegarde Jarvis n'est disponible.", success=False, speak=False)
+            return
+        self._worker(
+            lambda: self.api.request(
+                "POST",
+                "/api/maintenance/restore/plan",
+                payload={"backup_path": path},
+                timeout=5,
+            ),
+            partial(self._restore_plan_ready, path),
+        )
+
+    def _restore_plan_ready(self, path: str, plan: dict[str, object]) -> None:
+        if not bool(plan.get("ok")):
+            self.finish_activity(
+                str(plan.get("detail") or "Cette sauvegarde ne peut pas être restaurée."),
+                success=False,
+                speak=False,
+            )
+            return
+        action_key = str(plan.get("action_key") or "backup.restore")
+        description = str(plan.get("description") or "Restaurer cette sauvegarde.")
+        binding = plan.get("binding") if isinstance(plan.get("binding"), dict) else {
+            "backup_path": path
+        }
+        token = self.authorize(action_key, description, binding)
+        if not token:
+            self.finish_activity("D'accord. Je ne restaure rien.", speak=False)
+            return
+        self._worker(
+            lambda: self.api.request(
+                "POST",
+                "/api/maintenance/restore",
+                payload={"backup_path": path, "authorization_token": token},
+                timeout=15,
+            ),
+            self._restore_staged,
+        )
+
+    def _restore_staged(self, result: dict[str, object]) -> None:
+        detail = str(result.get("detail") or "Restauration préparée.")
+        if not bool(result.get("ok")):
+            self.finish_activity(detail, success=False, speak=False)
+            return
+        self.finish_activity(detail, speak=False)
+        QMessageBox.information(
+            self,
+            "Restauration prête",
+            "Ferme puis rouvre Jarvis pour appliquer la sauvegarde avant le démarrage des services.",
+        )
+
+    def configure_startup(self) -> None:
+        self.begin_activity("Je vérifie le démarrage automatique de Jarvis.", speak=False)
+        self._worker(
+            lambda: self.api.request("GET", "/api/maintenance/status", timeout=4),
+            self._startup_status_ready,
+        )
+
+    def _startup_status_ready(self, status: dict[str, object]) -> None:
+        startup = status.get("startup") if isinstance(status.get("startup"), dict) else {}
+        if not bool(startup.get("ok")):
+            self.finish_activity(
+                str(startup.get("detail") or "Le démarrage automatique n'est pas disponible."),
+                success=False,
+                speak=False,
+            )
+            return
+        enabled = not bool(startup.get("enabled"))
+        self._worker(
+            lambda: self.api.request(
+                "POST",
+                "/api/maintenance/startup/plan",
+                payload={"enabled": enabled},
+                timeout=4,
+            ),
+            partial(self._startup_plan_ready, enabled),
+        )
+
+    def _startup_plan_ready(self, enabled: bool, plan: dict[str, object]) -> None:
+        if not bool(plan.get("ok")):
+            self.finish_activity("Je n'ai pas pu préparer ce changement.", success=False, speak=False)
+            return
+        action_key = str(plan.get("action_key") or "system.startup.configure")
+        description = str(plan.get("description") or "Modifier le démarrage automatique.")
+        binding = plan.get("binding") if isinstance(plan.get("binding"), dict) else {
+            "enabled": enabled
+        }
+        token = self.authorize(action_key, description, binding)
+        if not token:
+            self.finish_activity("D'accord. Je ne change rien.", speak=False)
+            return
+        self._worker(
+            lambda: self.api.request(
+                "POST",
+                "/api/maintenance/startup",
+                payload={"enabled": enabled, "authorization_token": token},
+                timeout=5,
+            ),
+            lambda result: self.finish_activity(
+                str(result.get("detail") or "Configuration terminée."),
+                success=bool(result.get("ok")),
+                speak=False,
+            ),
+        )
 
     def emergency_stop(self) -> None:
         self.cancel_chat()
@@ -453,6 +654,8 @@ class JarvisProfessionalWindow(ProfessionalMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self.overlay_hotkey.close()
+        if self._tray_icon is not None:
+            self._tray_icon.hide()
         super().closeEvent(event)
 
 
@@ -471,8 +674,14 @@ def run() -> None:
         QMessageBox.information(None, "Jarvis", "Jarvis est déjà ouvert sur cet ordinateur.")
         return
 
+    recovery = session_recovery.begin()
+    recovery_backup = None
+    if bool(recovery.get("previous_unclean")):
+        recovery_backup = backup_manager.create("crash-recovery")
+
     backend = BackendService()
     if not backend.start():
+        session_recovery.end()
         QMessageBox.critical(
             None,
             "Jarvis",
@@ -481,11 +690,23 @@ def run() -> None:
         lock.unlock()
         return
 
-    window = JarvisProfessionalWindow()
-    window.show()
-    exit_code = app.exec()
-    backend.stop()
-    lock.unlock()
+    exit_code = 1
+    try:
+        window = JarvisProfessionalWindow()
+        window.show()
+        if bool(recovery.get("previous_unclean")):
+            detail = "Le dernier arrêt de Jarvis n'était pas propre."
+            if recovery_backup is not None and recovery_backup.ok:
+                detail += " Une sauvegarde de sécurité a été créée avant de reprendre."
+            QTimer.singleShot(
+                400,
+                lambda: QMessageBox.information(window, "Récupération Jarvis", detail),
+            )
+        exit_code = app.exec()
+    finally:
+        backend.stop()
+        session_recovery.end()
+        lock.unlock()
     raise SystemExit(exit_code)
 
 
