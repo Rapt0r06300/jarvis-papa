@@ -1,0 +1,115 @@
+name: Publish Installer To Main
+
+on:
+  workflow_run:
+    workflows: ["Windows EXE"]
+    types: [completed]
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish-installer:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout current main with Git LFS
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          lfs: true
+
+      - name: Refuse stale build publication
+        env:
+          BUILD_SHA: ${{ github.event.workflow_run.head_sha }}
+        shell: bash
+        run: |
+          git fetch origin main
+          current_sha=$(git rev-parse origin/main)
+          if [ "$current_sha" != "$BUILD_SHA" ]; then
+            echo "Refusing stale installer: build=$BUILD_SHA current-main=$current_sha" >&2
+            exit 1
+          fi
+
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          version=$(python - <<'PY'
+          import re
+          from pathlib import Path
+          text = Path("src/jarvis_papa/__init__.py").read_text(encoding="utf-8")
+          match = re.search(r'__version__\s*=\s*"([^"]+)"', text)
+          if not match:
+              raise SystemExit("Jarvis version not found")
+          print(match.group(1))
+          PY
+          )
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Download exact successful Windows artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          VERSION: ${{ steps.version.outputs.value }}
+        shell: bash
+        run: |
+          rm -rf installer-input
+          mkdir -p installer-input
+          gh run download "$RUN_ID" \
+            --repo "${{ github.repository }}" \
+            --name "Jarvis-Setup-$VERSION" \
+            --dir installer-input
+          test -f installer-input/Jarvis-Setup.exe
+          test -f installer-input/Jarvis-Setup.exe.sha256
+          test -f installer-input/deliverables.sha256
+          test -f installer-input/signing-status.txt
+
+      - name: Verify installer hash before repository publication
+        shell: bash
+        run: |
+          expected=$(awk '{print $1}' installer-input/Jarvis-Setup.exe.sha256 | tr 'A-F' 'a-f')
+          actual=$(sha256sum installer-input/Jarvis-Setup.exe | awk '{print $1}')
+          if [ "$expected" != "$actual" ]; then
+            echo "Installer SHA-256 mismatch; refusing repository publication." >&2
+            exit 1
+          fi
+
+      - name: Publish installer and provenance to main
+        env:
+          BUILD_SHA: ${{ github.event.workflow_run.head_sha }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        shell: bash
+        run: |
+          git lfs install --local
+          mkdir -p installer
+          cp installer-input/Jarvis-Setup.exe installer/Jarvis-Setup.exe
+          cp installer-input/Jarvis-Setup.exe.sha256 installer/Jarvis-Setup.exe.sha256
+          cp installer-input/deliverables.sha256 installer/deliverables.sha256
+          cp installer-input/signing-status.txt installer/signing-status.txt
+          printf '%s\n' "$BUILD_SHA" > installer/build-source-sha.txt
+          printf '%s\n' "$RUN_ID" > installer/build-run-id.txt
+
+          git add .gitattributes installer/
+          if git diff --cached --quiet; then
+            echo "Installer in main is already current."
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit -m "build: publish Jarvis installer from $BUILD_SHA [skip ci]"
+            git push origin HEAD:main
+          fi
+
+      - name: Remove temporary closure branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh api --method DELETE \
+            "repos/${{ github.repository }}/git/refs/heads/closure/grand-run-20260902" \
+            >/dev/null 2>&1 || true
