@@ -12,6 +12,7 @@ on:
       - "pyproject.toml"
       - ".env.example"
       - ".github/workflows/windows-exe.yml"
+      - ".github/workflows/release.yml"
 
 permissions:
   contents: read
@@ -131,7 +132,7 @@ jobs:
           $qwenWorker = "dist\JarvisPapa\_internal\jarvis_papa\voice\qwen_worker.py"
           if (-not (Test-Path $qwenWorker)) { throw "Qwen worker is missing from Jarvis Papa bundle" }
           $version = (Get-Item "dist\JarvisPapa\JarvisPapa.exe").VersionInfo.ProductVersion
-          if (-not $version.StartsWith("0.6.0")) { throw "JarvisPapa.exe metadata version is invalid: $version" }
+          if (-not $version.StartsWith("0.7.0")) { throw "JarvisPapa.exe metadata version is invalid: $version" }
           $process = Start-Process -FilePath "dist\JarvisPapa\JarvisPapa.exe" -PassThru
           $healthy = $false
           try {
@@ -143,15 +144,22 @@ jobs:
                 $health = Invoke-RestMethod -Uri "http://127.0.0.1:8765/health" -TimeoutSec 1
                 if ($health.status -eq "ok") {
                   $status = Invoke-RestMethod -Uri "http://127.0.0.1:8765/api/status" -TimeoutSec 2
-                  if ($status.version -ne "0.6.0") { throw "Unexpected Jarvis version: $($status.version)" }
+                  if ($status.version -ne "0.7.0") { throw "Unexpected Jarvis version: $($status.version)" }
                   $quality = Invoke-RestMethod -Uri "http://127.0.0.1:8765/api/advanced/voice/quality" -TimeoutSec 2
                   if (-not ($quality.PSObject.Properties.Name -contains "premium_ready")) {
                     throw "Voice quality endpoint is missing its readiness contract"
+                  }
+                  $maintenance = Invoke-RestMethod -Uri "http://127.0.0.1:8765/api/maintenance/status" -TimeoutSec 2
+                  if (-not ($maintenance.PSObject.Properties.Name -contains "updates")) {
+                    throw "Maintenance reliability contract is missing from packaged app"
                   }
                   $openapi = Invoke-RestMethod -Uri "http://127.0.0.1:8765/openapi.json" -TimeoutSec 2
                   $paths = @($openapi.paths.PSObject.Properties.Name)
                   if ($paths -notcontains "/api/advanced/browser/workflow") {
                     throw "Multi-step browser workflow route is missing from packaged app"
+                  }
+                  if ($paths -notcontains "/api/maintenance/restore") {
+                    throw "Protected restore route is missing from packaged app"
                   }
                   $healthy = $true
                   break
@@ -199,6 +207,7 @@ jobs:
           $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
           if (-not (Test-Path $iscc)) { throw "Inno Setup compiler not found" }
           & $iscc "packaging\JarvisPapa.iss"
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup compilation failed" }
 
       - name: Sign installer when certificate is configured
         id: sign_installer
@@ -233,10 +242,13 @@ jobs:
           JARVIS_SKIP_ONBOARDING: "1"
         run: |
           $setup = (Resolve-Path "installer-output\JarvisPapa-Setup.exe").Path
+          $setupHash = (Get-FileHash $setup -Algorithm SHA256).Hash
           $installDir = Join-Path $env:RUNNER_TEMP "JarvisPapaInstalled"
-          $legacyEnv = Join-Path $env:LOCALAPPDATA "JarvisPapa\.env"
+          $dataDir = Join-Path $env:LOCALAPPDATA "JarvisPapa"
+          $legacyEnv = Join-Path $dataDir ".env"
+          $startupKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
           Remove-Item $installDir -Recurse -Force -ErrorAction SilentlyContinue
-          Remove-Item $legacyEnv -Force -ErrorAction SilentlyContinue
+          Remove-Item $dataDir -Recurse -Force -ErrorAction SilentlyContinue
 
           function Install-Jarvis {
             $installer = Start-Process -FilePath $setup -ArgumentList @(
@@ -248,6 +260,16 @@ jobs:
             $installedQwenWorker = Join-Path $installDir "_internal\jarvis_papa\voice\qwen_worker.py"
             if (-not (Test-Path $installedQwenWorker)) { throw "Installed Qwen worker is missing" }
             if (Test-Path $legacyEnv) { throw "Fresh install recreated legacy plaintext .env" }
+
+            $cachedInstaller = Join-Path $dataDir "runtime\updates\current-installer.exe"
+            if (-not (Test-Path $cachedInstaller)) { throw "Rollback cache is missing current installer" }
+            $cachedHash = (Get-FileHash $cachedInstaller -Algorithm SHA256).Hash
+            if ($cachedHash -ne $setupHash) { throw "Cached installer hash differs from source setup" }
+
+            $startupCommand = (Get-ItemProperty -Path $startupKey -Name "Jarvis Papa" -ErrorAction Stop)."Jarvis Papa"
+            if ([string]::IsNullOrWhiteSpace($startupCommand) -or $startupCommand -notlike "*$installedExe*") {
+              throw "Per-user autostart registry entry is missing or points elsewhere"
+            }
             return $installedExe
           }
 
@@ -260,10 +282,19 @@ jobs:
                 try {
                   $health = Invoke-RestMethod -Uri "http://127.0.0.1:8765/health" -TimeoutSec 1
                   if ($health.status -eq "ok") {
+                    $status = Invoke-RestMethod -Uri "http://127.0.0.1:8765/api/status" -TimeoutSec 2
+                    if ($status.version -ne "0.7.0") { throw "Installed Jarvis version mismatch" }
+                    $maintenance = Invoke-RestMethod -Uri "http://127.0.0.1:8765/api/maintenance/status" -TimeoutSec 2
+                    if (-not ($maintenance.PSObject.Properties.Name -contains "restore")) {
+                      throw "Installed Jarvis is missing maintenance status"
+                    }
                     $openapi = Invoke-RestMethod -Uri "http://127.0.0.1:8765/openapi.json" -TimeoutSec 2
                     $paths = @($openapi.paths.PSObject.Properties.Name)
                     if ($paths -notcontains "/api/advanced/browser/workflow") {
                       throw "Installed Jarvis is missing advanced browser workflow route"
+                    }
+                    if ($paths -notcontains "/api/maintenance/updates/install") {
+                      throw "Installed Jarvis is missing protected update install route"
                     }
                     $healthy = $true
                     break
@@ -289,13 +320,21 @@ jobs:
             if (Test-Path (Join-Path $installDir "JarvisPapa.exe")) {
               throw "JarvisPapa.exe remained after uninstall"
             }
+            $startupProperty = Get-ItemProperty -Path $startupKey -Name "Jarvis Papa" -ErrorAction SilentlyContinue
+            if ($null -ne $startupProperty) { throw "Autostart registry entry remained after uninstall" }
           }
 
           $firstExe = Install-Jarvis
           Assert-JarvisHealthy $firstExe
+          $sentinel = Join-Path $dataDir "runtime\e2e-preserve.txt"
+          "preserve-me" | Set-Content $sentinel -Encoding utf8
           Uninstall-Jarvis
+          if (-not (Test-Path $sentinel)) { throw "User runtime data was removed during uninstall" }
 
           $secondExe = Install-Jarvis
+          if ((Get-Content $sentinel -Raw).Trim() -ne "preserve-me") {
+            throw "User runtime data did not survive reinstall"
+          }
           Assert-JarvisHealthy $secondExe
           Uninstall-Jarvis
 
@@ -342,7 +381,7 @@ jobs:
       - name: Upload final Windows installer
         uses: actions/upload-artifact@v4
         with:
-          name: JarvisPapa-Setup-0.6.0
+          name: JarvisPapa-Setup-0.7.0
           path: |
             installer-output/JarvisPapa-Setup.exe
             installer-output/JarvisPapa-Setup.exe.sha256
