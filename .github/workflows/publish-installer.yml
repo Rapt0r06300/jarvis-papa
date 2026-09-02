@@ -18,7 +18,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout current main with Git LFS
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: main
           fetch-depth: 0
@@ -80,6 +80,16 @@ jobs:
             exit 1
           fi
 
+      - name: Verify Git LFS publication contract
+        shell: bash
+        run: |
+          test -f .gitattributes
+          filter=$(git check-attr filter -- installer/Jarvis-Setup.exe | awk '{print $3}')
+          if [ "$filter" != "lfs" ]; then
+            echo "installer/Jarvis-Setup.exe is not covered by Git LFS attributes." >&2
+            exit 1
+          fi
+
       - name: Publish installer and provenance to main
         env:
           BUILD_SHA: ${{ github.event.workflow_run.head_sha }}
@@ -96,6 +106,16 @@ jobs:
           printf '%s\n' "$RUN_ID" > installer/build-run-id.txt
 
           git add .gitattributes installer/
+          filter=$(git check-attr filter -- installer/Jarvis-Setup.exe | awk '{print $3}')
+          if [ "$filter" != "lfs" ]; then
+            echo "Staged installer lost its Git LFS contract." >&2
+            exit 1
+          fi
+          if ! git show :installer/Jarvis-Setup.exe | grep -q '^version https://git-lfs.github.com/spec/v1$'; then
+            echo "Staged installer is not a Git LFS pointer; refusing oversized Git blob publication." >&2
+            exit 1
+          fi
+
           if git diff --cached --quiet; then
             echo "Installer in main is already current."
           else
@@ -104,12 +124,3 @@ jobs:
             git commit -m "build: publish Jarvis installer from $BUILD_SHA [skip ci]"
             git push origin HEAD:main
           fi
-
-      - name: Remove temporary closure branch
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          gh api --method DELETE \
-            "repos/${{ github.repository }}/git/refs/heads/closure/grand-run-20260902" \
-            >/dev/null 2>&1 || true
