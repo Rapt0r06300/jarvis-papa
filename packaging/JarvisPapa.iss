@@ -1,7 +1,7 @@
 #define MyAppName "Jarvis Papa"
 #define MyAppVersion "0.7.0"
 #define MyAppPublisher "Jarvis Papa"
-#define MyAppExeName "JarvisPapa.exe"
+#define MyAppExeName "Jarvis.exe"
 #define MyAppUserModelID "JarvisPapa.Desktop"
 
 [Setup]
@@ -15,7 +15,7 @@ DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
 OutputDir=..\installer-output
-OutputBaseFilename=JarvisPapa-Setup
+OutputBaseFilename=Jarvis-Setup
 SetupIconFile=jarvis.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 Compression=lzma2/ultra64
@@ -36,7 +36,7 @@ Name: "{localappdata}\JarvisPapa\runtime"
 Name: "{localappdata}\JarvisPapa\runtime\updates"
 
 [Files]
-Source: "..\dist\JarvisPapa\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\dist\Jarvis\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\dist\JarvisNativeHost.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\dist\JarvisDiagnostic.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\dist\jarvis-papa-thunderbird.xpi"; DestDir: "{app}\Thunderbird"; Flags: ignoreversion
