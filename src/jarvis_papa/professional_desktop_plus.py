@@ -52,6 +52,10 @@ class JarvisProfessionalWindow(ProfessionalMainWindow):
         backup.triggered.connect(self.create_backup)
         menu.addAction(backup)
 
+        restore = QAction("Restaurer la dernière sauvegarde", self)
+        restore.triggered.connect(self.restore_latest_backup)
+        menu.addAction(restore)
+
         startup = QAction("Configurer le démarrage avec Windows", self)
         startup.triggered.connect(self.configure_startup)
         menu.addAction(startup)
@@ -125,7 +129,9 @@ class JarvisProfessionalWindow(ProfessionalMainWindow):
             if level not in {"urgent", "important"} or self._tray_icon is None:
                 continue
             title = str(event.get("title") or "Jarvis")[:180]
-            detail = str(event.get("detail") or "Une information importante demande ton attention.")[:600]
+            detail = str(
+                event.get("detail") or "Une information importante demande ton attention."
+            )[:600]
             self._tray_icon.showMessage(title, detail)
 
     def toggle_overlay(self) -> None:
@@ -164,6 +170,68 @@ class JarvisProfessionalWindow(ProfessionalMainWindow):
         else:
             self.finish_activity(detail, success=False, speak=False)
 
+    def restore_latest_backup(self) -> None:
+        self.begin_activity("Je cherche la dernière sauvegarde Jarvis disponible.", speak=False)
+        self._worker(
+            lambda: self.api.request("GET", "/api/maintenance/backups", timeout=5),
+            self._restore_backups_ready,
+        )
+
+    def _restore_backups_ready(self, payload: dict[str, object]) -> None:
+        items = payload.get("items") if isinstance(payload.get("items"), list) else []
+        path = str(items[0]) if items else ""
+        if not path:
+            self.finish_activity("Aucune sauvegarde Jarvis n'est disponible.", success=False, speak=False)
+            return
+        self._worker(
+            lambda: self.api.request(
+                "POST",
+                "/api/maintenance/restore/plan",
+                payload={"backup_path": path},
+                timeout=5,
+            ),
+            partial(self._restore_plan_ready, path),
+        )
+
+    def _restore_plan_ready(self, path: str, plan: dict[str, object]) -> None:
+        if not bool(plan.get("ok")):
+            self.finish_activity(
+                str(plan.get("detail") or "Cette sauvegarde ne peut pas être restaurée."),
+                success=False,
+                speak=False,
+            )
+            return
+        action_key = str(plan.get("action_key") or "backup.restore")
+        description = str(plan.get("description") or "Restaurer cette sauvegarde.")
+        binding = plan.get("binding") if isinstance(plan.get("binding"), dict) else {
+            "backup_path": path
+        }
+        token = self.authorize(action_key, description, binding)
+        if not token:
+            self.finish_activity("D'accord. Je ne restaure rien.", speak=False)
+            return
+        self._worker(
+            lambda: self.api.request(
+                "POST",
+                "/api/maintenance/restore",
+                payload={"backup_path": path, "authorization_token": token},
+                timeout=15,
+            ),
+            self._restore_staged,
+        )
+
+    def _restore_staged(self, result: dict[str, object]) -> None:
+        detail = str(result.get("detail") or "Restauration préparée.")
+        if not bool(result.get("ok")):
+            self.finish_activity(detail, success=False, speak=False)
+            return
+        self.finish_activity(detail, speak=False)
+        QMessageBox.information(
+            self,
+            "Restauration prête",
+            "Ferme puis rouvre Jarvis pour appliquer la sauvegarde avant le démarrage des services.",
+        )
+
     def configure_startup(self) -> None:
         self.begin_activity("Je vérifie le démarrage automatique de Jarvis.", speak=False)
         self._worker(
@@ -197,7 +265,9 @@ class JarvisProfessionalWindow(ProfessionalMainWindow):
             return
         action_key = str(plan.get("action_key") or "system.startup.configure")
         description = str(plan.get("description") or "Modifier le démarrage automatique.")
-        binding = plan.get("binding") if isinstance(plan.get("binding"), dict) else {"enabled": enabled}
+        binding = plan.get("binding") if isinstance(plan.get("binding"), dict) else {
+            "enabled": enabled
+        }
         token = self.authorize(action_key, description, binding)
         if not token:
             self.finish_activity("D'accord. Je ne change rien.", speak=False)
@@ -620,6 +690,7 @@ def run() -> None:
         lock.unlock()
         return
 
+    exit_code = 1
     try:
         window = JarvisProfessionalWindow()
         window.show()
