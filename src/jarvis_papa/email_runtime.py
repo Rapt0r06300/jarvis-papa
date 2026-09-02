@@ -337,7 +337,7 @@ class SanitizedEmailHtml:
 
 
 class _SafeEmailHtmlParser(HTMLParser):
-    _active_tags = {"script", "style", "iframe", "object", "embed", "form"}
+    _active_tags = ("script", "style", "iframe", "object", "embed", "form")
 
     def __init__(self, provenance: ProvenanceRef) -> None:
         super().__init__(convert_charrefs=True)
