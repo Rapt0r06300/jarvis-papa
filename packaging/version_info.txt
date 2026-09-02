@@ -15,11 +15,11 @@ VSVersionInfo(
         '040C04E4',
         [
           StringStruct('CompanyName', 'Jarvis Papa'),
-          StringStruct('FileDescription', 'Jarvis Papa - Assistant personnel Windows'),
+          StringStruct('FileDescription', 'Jarvis - Assistant personnel Windows'),
           StringStruct('FileVersion', '0.7.0'),
-          StringStruct('InternalName', 'JarvisPapa'),
+          StringStruct('InternalName', 'Jarvis'),
           StringStruct('LegalCopyright', 'Jarvis Papa'),
-          StringStruct('OriginalFilename', 'JarvisPapa.exe'),
+          StringStruct('OriginalFilename', 'Jarvis.exe'),
           StringStruct('ProductName', 'Jarvis Papa'),
           StringStruct('ProductVersion', '0.7.0')
         ]
