@@ -173,7 +173,7 @@ class RuntimeProgressSubscription:
                 continue
             try:
                 self._callback(item)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 _LOGGER.exception("Runtime progress subscriber %s failed", self.name)
 
 
