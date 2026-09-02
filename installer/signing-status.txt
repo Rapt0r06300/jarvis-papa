@@ -1,0 +1,5 @@
+UNSIGNED_CERTIFICATE_NOT_CONFIGURED
+dist\Jarvis\Jarvis.exe	NotSigned	
+dist\JarvisNativeHost.exe	NotSigned	
+dist\JarvisDiagnostic.exe	NotSigned	
+installer-output\Jarvis-Setup.exe	NotSigned	
