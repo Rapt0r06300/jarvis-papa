@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -110,7 +111,16 @@ class BackupManager:
     """Bounded local backups for durable Jarvis state and DPAPI ciphertext."""
 
     EXCLUDED_SUFFIXES = {".lock", ".log", ".tmp", ".wav", ".mp3"}
+    EXCLUDED_RUNTIME_NAMES = {
+        "audit.1.jsonl",
+        "audit.jsonl",
+        "circuit-breakers.json",
+        "desktop-session-active.json",
+        "kill-switch.json",
+    }
     MAX_FILE_BYTES = 64 * 1024 * 1024
+    MAX_ARCHIVE_BYTES = 256 * 1024 * 1024
+    MAX_ARCHIVE_FILES = 5000
 
     def __init__(self, data_dir: Path, runtime_dir: Path) -> None:
         self.data_dir = data_dir.resolve()
@@ -144,7 +154,7 @@ class BackupManager:
                 }
                 archive.writestr("backup-manifest.json", json.dumps(manifest, indent=2))
             os.replace(temporary, destination)
-        except OSError as exc:
+        except (OSError, zipfile.BadZipFile) as exc:
             temporary.unlink(missing_ok=True)
             return BackupResult(False, "", 0, str(exc))
         return BackupResult(
@@ -169,24 +179,28 @@ class BackupManager:
             )
         try:
             with zipfile.ZipFile(source) as archive:
-                members = [name for name in archive.namelist() if name != "backup-manifest.json"]
-                if not members or any(not self._safe_member(name) for name in members):
-                    return BackupResult(
-                        False,
-                        str(source),
-                        0,
-                        "Archive invalide ou chemin non autorisé.",
-                    )
+                members = self._validated_members(archive)
+                if not members:
+                    return BackupResult(False, str(source), 0, "Archive vide ou invalide.")
                 with tempfile.TemporaryDirectory(dir=self.data_dir) as temp_dir:
                     extracted = Path(temp_dir)
-                    archive.extractall(extracted)
-                    for member in members:
-                        relative = PurePosixPath(member)
+                    for info in members:
+                        archive.extract(info, extracted)
+                        relative = PurePosixPath(info.filename)
                         candidate = extracted.joinpath(*relative.parts)
                         target = self.data_dir.joinpath(*relative.parts)
+                        if not self._safe_target(target):
+                            return BackupResult(
+                                False,
+                                str(source),
+                                0,
+                                "La cible de restauration sort du dossier Jarvis.",
+                            )
                         target.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.copy2(candidate, target)
-        except (OSError, zipfile.BadZipFile) as exc:
+                        temporary_target = target.with_suffix(target.suffix + ".restore-tmp")
+                        shutil.copy2(candidate, temporary_target)
+                        os.replace(temporary_target, target)
+        except (OSError, ValueError, zipfile.BadZipFile) as exc:
             return BackupResult(False, str(source), 0, str(exc))
         return BackupResult(
             True,
@@ -220,11 +234,27 @@ class BackupManager:
             files.append((secret_store, "protected-secrets.json"))
         if self.runtime_dir.is_dir():
             for path in self.runtime_dir.rglob("*"):
-                if not self._eligible(path):
+                if not self._eligible_runtime(path):
                     continue
-                relative = path.relative_to(self.data_dir)
+                try:
+                    relative = path.relative_to(self.data_dir)
+                except ValueError:
+                    continue
                 files.append((path, relative.as_posix()))
         return sorted(files, key=lambda item: item[1])
+
+    def _eligible_runtime(self, path: Path) -> bool:
+        if not self._eligible(path):
+            return False
+        try:
+            relative = path.relative_to(self.runtime_dir)
+        except ValueError:
+            return False
+        if not relative.parts:
+            return False
+        if relative.parts[0].casefold() == "updates":
+            return False
+        return relative.as_posix().casefold() not in self.EXCLUDED_RUNTIME_NAMES
 
     def _eligible(self, path: Path) -> bool:
         if not path.is_file() or path.suffix.casefold() in self.EXCLUDED_SUFFIXES:
@@ -234,6 +264,39 @@ class BackupManager:
         except OSError:
             return False
         return 0 <= size <= self.MAX_FILE_BYTES
+
+    def _validated_members(self, archive: zipfile.ZipFile) -> list[zipfile.ZipInfo]:
+        members: list[zipfile.ZipInfo] = []
+        seen: set[str] = set()
+        total = 0
+        for info in archive.infolist():
+            if info.filename == "backup-manifest.json":
+                continue
+            if info.is_dir() or not self._safe_member(info.filename):
+                raise ValueError("Archive de sauvegarde contenant un chemin non autorisé.")
+            mode = (info.external_attr >> 16) & 0o170000
+            if mode == stat.S_IFLNK:
+                raise ValueError("Les liens symboliques sont interdits dans une sauvegarde Jarvis.")
+            if info.file_size < 0 or info.file_size > self.MAX_FILE_BYTES:
+                raise ValueError("Un fichier de sauvegarde dépasse la taille maximale autorisée.")
+            normalized = PurePosixPath(info.filename).as_posix().casefold()
+            if normalized in seen:
+                raise ValueError("Archive de sauvegarde contenant des chemins en doublon.")
+            seen.add(normalized)
+            total += info.file_size
+            if total > self.MAX_ARCHIVE_BYTES:
+                raise ValueError("La sauvegarde dépasse la taille totale maximale autorisée.")
+            members.append(info)
+            if len(members) > self.MAX_ARCHIVE_FILES:
+                raise ValueError("La sauvegarde contient trop de fichiers.")
+        return members
+
+    def _safe_target(self, target: Path) -> bool:
+        try:
+            target.resolve(strict=False).relative_to(self.data_dir)
+        except (OSError, ValueError):
+            return False
+        return True
 
     @staticmethod
     def _safe_member(name: str) -> bool:
