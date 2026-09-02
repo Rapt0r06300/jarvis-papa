@@ -4,9 +4,9 @@ import hashlib
 import json
 import math
 import time
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
-from typing import Iterable
 from uuid import uuid4
 
 
@@ -16,7 +16,7 @@ class ConfidenceLevel(StrEnum):
     HIGH = "high"
 
     @classmethod
-    def from_score(cls, score: float) -> "ConfidenceLevel":
+    def from_score(cls, score: float) -> ConfidenceLevel:
         value = _bounded_confidence(score)
         if value >= 0.8:
             return cls.HIGH
@@ -116,13 +116,14 @@ class ProvenanceRef:
     def __post_init__(self) -> None:
         source = _clean_identifier(self.source, 80)
         source_id = _clean_identifier(self.source_id, 240)
+        observed_at = float(self.observed_at)
         if not source or not source_id:
             raise ValueError("provenance requires source and source_id")
-        if float(self.observed_at) <= 0:
+        if observed_at <= 0:
             raise ValueError("observed_at must be positive")
         object.__setattr__(self, "source", source)
         object.__setattr__(self, "source_id", source_id)
-        object.__setattr__(self, "observed_at", float(self.observed_at))
+        object.__setattr__(self, "observed_at", observed_at)
         object.__setattr__(self, "locator", _clean_text(self.locator, 1000))
         object.__setattr__(self, "content_hash", _clean_identifier(self.content_hash, 128))
 
@@ -162,13 +163,7 @@ class NormalizedEvent:
         )[:32]
         provenance = tuple(self.provenance)[:16]
         if not provenance:
-            provenance = (
-                ProvenanceRef(
-                    source=source,
-                    source_id=source_event_id,
-                    observed_at=observed_at,
-                ),
-            )
+            provenance = (ProvenanceRef(source, source_event_id, observed_at),)
         object.__setattr__(self, "source", source)
         object.__setattr__(self, "source_event_id", source_event_id)
         object.__setattr__(self, "event_type", event_type)
@@ -191,12 +186,9 @@ class NormalizedEvent:
 
     @property
     def identity_key(self) -> str:
-        material = "|".join(
-            (
-                self.source.casefold(),
-                self.source_event_id.casefold(),
-                self.source_version.casefold(),
-            )
+        material = (
+            f"{self.source.casefold()}|{self.source_event_id.casefold()}|"
+            f"{self.source_version.casefold()}"
         )
         return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
@@ -219,22 +211,7 @@ class NormalizedEvent:
         }
 
     @classmethod
-    def from_dict(cls, payload: dict[str, object]) -> "NormalizedEvent":
-        raw_provenance = payload.get("provenance")
-        provenance: list[ProvenanceRef] = []
-        if isinstance(raw_provenance, list):
-            for item in raw_provenance[:16]:
-                if not isinstance(item, dict):
-                    continue
-                provenance.append(
-                    ProvenanceRef(
-                        source=str(item.get("source") or ""),
-                        source_id=str(item.get("source_id") or ""),
-                        observed_at=float(item.get("observed_at") or 0.0),
-                        locator=str(item.get("locator") or ""),
-                        content_hash=str(item.get("content_hash") or ""),
-                    )
-                )
+    def from_dict(cls, payload: dict[str, object]) -> NormalizedEvent:
         refs = payload.get("subject_refs")
         return cls(
             source=str(payload.get("source") or ""),
@@ -244,7 +221,7 @@ class NormalizedEvent:
             observed_at=float(payload.get("observed_at") or 0.0),
             subject_refs=tuple(str(item) for item in refs) if isinstance(refs, list) else (),
             payload_summary=str(payload.get("payload_summary") or ""),
-            provenance=tuple(provenance),
+            provenance=tuple(_provenance_list(payload.get("provenance"))),
             sensitivity=str(payload.get("sensitivity") or "personal"),
             confidence=float(payload.get("confidence") or 0.0),
             source_version=str(payload.get("source_version") or ""),
@@ -313,7 +290,7 @@ class EntityRef:
         }
 
     @classmethod
-    def from_dict(cls, payload: dict[str, object]) -> "EntityRef":
+    def from_dict(cls, payload: dict[str, object]) -> EntityRef:
         aliases = payload.get("aliases")
         return cls(
             kind=EntityKind(str(payload.get("kind") or EntityKind.PERSON.value)),
@@ -359,23 +336,18 @@ class EntityRelation:
         confidence: float,
         reason: str,
         changed_at: float | None = None,
-    ) -> "EntityRelation":
+    ) -> EntityRelation:
         reason = _clean_text(reason, 500)
         if not reason:
             raise ValueError("relation state changes require a reason")
-        transition = RelationTransition(
-            from_state=self.state,
-            to_state=state,
-            changed_at=float(changed_at or time.time()),
-            reason=reason,
-        )
+        transition = RelationTransition(self.state, state, float(changed_at or time.time()), reason)
         return EntityRelation(
-            left_entity_id=self.left_entity_id,
-            right_entity_id=self.right_entity_id,
-            state=state,
-            confidence=confidence,
-            evidence=self.evidence,
-            history=(*self.history, transition),
+            self.left_entity_id,
+            self.right_entity_id,
+            state,
+            confidence,
+            self.evidence,
+            (*self.history, transition),
         )
 
 
@@ -389,14 +361,14 @@ class TimelineEntry:
     summary: str
 
     @classmethod
-    def from_event(cls, event: NormalizedEvent) -> "TimelineEntry":
+    def from_event(cls, event: NormalizedEvent) -> TimelineEntry:
         return cls(
-            event_key=event.identity_key,
-            occurred_at=event.occurred_at,
-            observed_at=event.observed_at,
-            source=event.source,
-            event_type=event.event_type,
-            summary=event.payload_summary,
+            event.identity_key,
+            event.occurred_at,
+            event.observed_at,
+            event.source,
+            event.event_type,
+            event.payload_summary,
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -423,12 +395,12 @@ class SituationTask:
         responsibility: Responsibility,
         due_at: float | None = None,
         source_event_key: str = "",
-    ) -> "SituationTask":
+    ) -> SituationTask:
         return cls(
-            task_id=uuid4().hex,
-            title=_clean_text(title, 500),
-            action_state=action_state,
-            responsibility=responsibility,
+            uuid4().hex,
+            _clean_text(title, 500),
+            action_state,
+            responsibility,
             due_at=float(due_at) if due_at is not None else None,
             source_event_key=_clean_identifier(source_event_key, 128),
         )
@@ -460,17 +432,17 @@ class SituationProposal:
         alternatives: Iterable[str] = (),
         action_key: str = "",
         risk: str = "medium",
-    ) -> "SituationProposal":
+    ) -> SituationProposal:
         cleaned = tuple(
             item for item in (_clean_text(value, 500) for value in alternatives) if item
         )[:2]
         return cls(
-            proposal_id=uuid4().hex,
-            title=_clean_text(title, 500),
-            recommendation=_clean_text(recommendation, 1500),
-            alternatives=cleaned,
-            action_key=_clean_identifier(action_key, 160),
-            risk=_clean_identifier(risk, 40) or "medium",
+            uuid4().hex,
+            _clean_text(title, 500),
+            _clean_text(recommendation, 1500),
+            cleaned,
+            _clean_identifier(action_key, 160),
+            _clean_identifier(risk, 40) or "medium",
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -504,17 +476,17 @@ class SituationAction:
         read_only: bool = False,
         reversible: bool = False,
         expected_proof: Iterable[str] = (),
-    ) -> "SituationAction":
+    ) -> SituationAction:
         return cls(
-            action_id=uuid4().hex,
-            proposal_id=_clean_identifier(proposal_id, 128),
-            action_key=_clean_identifier(action_key, 160),
-            description=_clean_text(description, 1200),
-            binding=_bounded_map(binding or {}),
-            risk=_clean_identifier(risk, 40) or "medium",
-            read_only=bool(read_only),
-            reversible=bool(reversible),
-            expected_proof=tuple(
+            uuid4().hex,
+            _clean_identifier(proposal_id, 128),
+            _clean_identifier(action_key, 160),
+            _clean_text(description, 1200),
+            _bounded_map(binding or {}),
+            _clean_identifier(risk, 40) or "medium",
+            bool(read_only),
+            bool(reversible),
+            tuple(
                 item for item in (_clean_identifier(x, 100) for x in expected_proof) if item
             )[:12],
         )
@@ -543,14 +515,14 @@ class VerifiedOutcome:
         verified: bool,
         proof: dict[str, object] | None = None,
         occurred_at: float | None = None,
-    ) -> "VerifiedOutcome":
+    ) -> VerifiedOutcome:
         return cls(
-            outcome_id=uuid4().hex,
-            action_id=_clean_identifier(action_id, 128),
-            outcome_type=_clean_identifier(outcome_type, 120),
-            verified=bool(verified),
-            proof=_bounded_map(proof or {}),
-            occurred_at=float(occurred_at or time.time()),
+            uuid4().hex,
+            _clean_identifier(action_id, 128),
+            _clean_identifier(outcome_type, 120),
+            bool(verified),
+            _bounded_map(proof or {}),
+            float(occurred_at or time.time()),
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -574,25 +546,26 @@ class ExpectedEvent:
         description: str,
         *,
         source_event_key: str = "",
-    ) -> "ExpectedEvent":
-        if float(due_at) <= 0:
+    ) -> ExpectedEvent:
+        due = float(due_at)
+        if due <= 0:
             raise ValueError("due_at must be positive")
         return cls(
-            expected_event_id=uuid4().hex,
-            kind=_clean_identifier(kind, 120),
-            due_at=float(due_at),
-            description=_clean_text(description, 700),
+            uuid4().hex,
+            _clean_identifier(kind, 120),
+            due,
+            _clean_text(description, 700),
             source_event_key=_clean_identifier(source_event_key, 128),
         )
 
-    def satisfied(self, at: float | None = None) -> "ExpectedEvent":
+    def satisfied(self, at: float | None = None) -> ExpectedEvent:
         return ExpectedEvent(
-            expected_event_id=self.expected_event_id,
-            kind=self.kind,
-            due_at=self.due_at,
-            description=self.description,
-            satisfied_at=float(at or time.time()),
-            source_event_key=self.source_event_key,
+            self.expected_event_id,
+            self.kind,
+            self.due_at,
+            self.description,
+            float(at or time.time()),
+            self.source_event_key,
         )
 
     def overdue(self, now: float | None = None) -> bool:
@@ -641,12 +614,12 @@ class Situation:
         domain: SituationDomain = SituationDomain.GENERIC,
         state: str = "new",
         confidence: float = 0.5,
-    ) -> "Situation":
+    ) -> Situation:
         return cls(
-            situation_id=uuid4().hex,
-            domain=domain,
-            title=_clean_text(title, 700) or "Situation",
-            state=_clean_identifier(state, 100) or "new",
+            uuid4().hex,
+            domain,
+            _clean_text(title, 700) or "Situation",
+            _clean_identifier(state, 100) or "new",
             confidence=_bounded_confidence(confidence),
         )
 
@@ -664,10 +637,7 @@ class Situation:
         for ref in event.provenance:
             if ref not in self.evidence:
                 self.evidence.append(ref)
-        self.confidence = combine_confidence(
-            (self.confidence, event.confidence),
-            independent=True,
-        )
+        self.confidence = combine_confidence((self.confidence, event.confidence), independent=True)
         self.updated_at = max(self.updated_at, event.observed_at, time.time())
         return True
 
@@ -704,7 +674,7 @@ class Situation:
         }
 
     @classmethod
-    def from_dict(cls, payload: dict[str, object]) -> "Situation":
+    def from_dict(cls, payload: dict[str, object]) -> Situation:
         situation = cls(
             situation_id=str(payload.get("situation_id") or uuid4().hex),
             domain=SituationDomain(str(payload.get("domain") or SituationDomain.GENERIC.value)),
@@ -712,9 +682,7 @@ class Situation:
             state=str(payload.get("state") or "new"),
             status=SituationStatus(str(payload.get("status") or SituationStatus.ACTIVE.value)),
             confidence=float(payload.get("confidence") or 0.0),
-            action_state=ActionState(
-                str(payload.get("action_state") or ActionState.NO_ACTION.value)
-            ),
+            action_state=ActionState(str(payload.get("action_state") or ActionState.NO_ACTION.value)),
             responsibility=Responsibility(
                 str(payload.get("responsibility") or Responsibility.UNCLEAR.value)
             ),
@@ -804,8 +772,8 @@ def transition_situation(
     changed_at: float | None = None,
 ) -> Situation:
     target = _clean_identifier(new_state, 100)
-    reason = _clean_text(reason, 500)
-    if not target or not reason:
+    clean_reason = _clean_text(reason, 500)
+    if not target or not clean_reason:
         raise ValueError("state transition requires target and reason")
     current = situation.state
     if target == current:
@@ -814,11 +782,10 @@ def transition_situation(
         situation.domain,
         _STATE_TRANSITIONS[SituationDomain.GENERIC],
     )
-    allowed = transitions.get(current, frozenset())
-    if target not in allowed:
+    if target not in transitions.get(current, frozenset()):
         raise ValueError(f"invalid {situation.domain.value} transition: {current} -> {target}")
     at = float(changed_at or time.time())
-    situation.state_history.append(StateTransition(current, target, at, reason))
+    situation.state_history.append(StateTransition(current, target, at, clean_reason))
     situation.state = target
     situation.updated_at = max(situation.updated_at, at)
     if target == "archived":
@@ -853,7 +820,6 @@ def score_priority(situation: Situation, *, now: float | None = None) -> Priorit
     score = 0
     reasons: list[str] = []
     metadata = situation.metadata
-
     deadline = _optional_float(metadata.get("deadline_at"))
     if deadline is not None:
         hours = (deadline - current) / 3600.0
@@ -866,7 +832,6 @@ def score_priority(situation: Situation, *, now: float | None = None) -> Priorit
         elif hours <= 72:
             score += 20
             reasons.append("deadline_72h:+20")
-
     financial_loss = max(0.0, _optional_float(metadata.get("financial_loss")) or 0.0)
     if financial_loss >= 500:
         score += 30
@@ -874,20 +839,15 @@ def score_priority(situation: Situation, *, now: float | None = None) -> Priorit
     elif financial_loss > 0:
         score += 15
         reasons.append("financial_loss:+15")
-
-    if bool(metadata.get("bank_or_security")):
-        score += 35
-        reasons.append("bank_security:+35")
-    if bool(metadata.get("active_sale")):
-        score += 15
-        reasons.append("active_sale:+15")
-    if bool(metadata.get("buyer_waiting")):
-        score += 20
-        reasons.append("buyer_waiting:+20")
-    if bool(metadata.get("pickup_expiring")):
-        score += 30
-        reasons.append("pickup_expiring:+30")
-
+    for flag, points, reason in (
+        ("bank_or_security", 35, "bank_security:+35"),
+        ("active_sale", 15, "active_sale:+15"),
+        ("buyer_waiting", 20, "buyer_waiting:+20"),
+        ("pickup_expiring", 30, "pickup_expiring:+30"),
+    ):
+        if bool(metadata.get(flag)):
+            score += points
+            reasons.append(reason)
     follow_up_age = max(0.0, _optional_float(metadata.get("follow_up_age_hours")) or 0.0)
     if follow_up_age >= 72:
         score += 20
@@ -895,7 +855,6 @@ def score_priority(situation: Situation, *, now: float | None = None) -> Priorit
     elif follow_up_age >= 24:
         score += 10
         reasons.append("follow_up_due:+10")
-
     contact_importance = max(
         0.0,
         min(_optional_float(metadata.get("contact_importance")) or 0.0, 1.0),
@@ -903,25 +862,15 @@ def score_priority(situation: Situation, *, now: float | None = None) -> Priorit
     if contact_importance >= 0.8:
         score += 15
         reasons.append("important_contact:+15")
-
     if situation.action_state not in {ActionState.NO_ACTION, ActionState.READ_ONLY}:
         score += 15
         reasons.append("action_required:+15")
-
     confidence_adjustment = round((situation.confidence - 0.5) * 10)
     if confidence_adjustment:
         score += confidence_adjustment
         reasons.append(f"confidence:{confidence_adjustment:+d}")
-
     score = max(0, min(int(score), 100))
-    if score >= 70:
-        band = "URGENT"
-    elif score >= 45:
-        band = "A_FAIRE"
-    elif score >= 20:
-        band = "A_SURVEILLER"
-    else:
-        band = "INFORMATION"
+    band = "URGENT" if score >= 70 else "A_FAIRE" if score >= 45 else "A_SURVEILLER" if score >= 20 else "INFORMATION"
     return PriorityResult(score, band, tuple(reasons))
 
 
@@ -942,46 +891,41 @@ def apply_verified_outcome(situation: Situation, outcome: VerifiedOutcome) -> bo
         return False
     situation.outcomes.append(outcome)
     situation.updated_at = max(situation.updated_at, outcome.occurred_at)
-    if not outcome.verified:
+    if not outcome.verified or outcome.outcome_type not in _COMPLETION_OUTCOMES:
         return False
-    if outcome.outcome_type in _COMPLETION_OUTCOMES:
-        situation.status = SituationStatus.COMPLETED
-        situation.state = "completed"
-        situation.action_state = ActionState.NO_ACTION
-        situation.responsibility = Responsibility.COMPLETED
-        situation.tasks = [
-            SituationTask(
-                task_id=task.task_id,
-                title=task.title,
-                action_state=task.action_state,
-                responsibility=task.responsibility,
-                status=TaskStatus.COMPLETED if task.status is TaskStatus.OPEN else task.status,
-                due_at=task.due_at,
-                created_at=task.created_at,
-                source_event_key=task.source_event_key,
-            )
-            for task in situation.tasks
-        ]
-        return True
-    return False
+    situation.status = SituationStatus.COMPLETED
+    situation.state = "completed"
+    situation.action_state = ActionState.NO_ACTION
+    situation.responsibility = Responsibility.COMPLETED
+    situation.tasks = [
+        SituationTask(
+            task.task_id,
+            task.title,
+            task.action_state,
+            task.responsibility,
+            TaskStatus.COMPLETED if task.status is TaskStatus.OPEN else task.status,
+            task.due_at,
+            task.created_at,
+            task.source_event_key,
+        )
+        for task in situation.tasks
+    ]
+    return True
 
 
 def overdue_tasks(situation: Situation, *, now: float | None = None) -> list[SituationTask]:
     current = float(now or time.time())
     existing_sources = {task.source_event_key for task in situation.tasks}
-    generated: list[SituationTask] = []
-    for expected in situation.expected_events:
-        if not expected.overdue(current) or expected.expected_event_id in existing_sources:
-            continue
-        generated.append(
-            SituationTask.create(
-                f"Vérifier : {expected.description}",
-                action_state=ActionState.FOLLOW_UP,
-                responsibility=Responsibility.FATHER_MUST_ACT,
-                source_event_key=expected.expected_event_id,
-            )
+    return [
+        SituationTask.create(
+            f"Vérifier : {expected.description}",
+            action_state=ActionState.FOLLOW_UP,
+            responsibility=Responsibility.FATHER_MUST_ACT,
+            source_event_key=expected.expected_event_id,
         )
-    return generated
+        for expected in situation.expected_events
+        if expected.overdue(current) and expected.expected_event_id not in existing_sources
+    ]
 
 
 @dataclass(frozen=True, slots=True)
@@ -1024,7 +968,7 @@ def correlation_keys(
     ordered: list[str] = [f"event:{event.identity_key}"]
     for ref in event.subject_refs:
         namespace, separator, raw_value = ref.partition(":")
-        if separator and namespace.casefold() in {
+        known = {
             "order",
             "tracking",
             "thread",
@@ -1033,14 +977,15 @@ def correlation_keys(
             "document",
             "listing",
             "account",
-        }:
-            ordered.append(_hashed_key(namespace, raw_value))
-        else:
-            ordered.append(_hashed_key("subject", ref))
+        }
+        ordered.append(
+            _hashed_key(namespace, raw_value)
+            if separator and namespace.casefold() in known
+            else _hashed_key("subject", ref)
+        )
     for entity in entities:
         ordered.append(_hashed_key(entity.kind.value, entity.canonical_id))
-        for alias in entity.aliases:
-            ordered.append(_hashed_key(f"{entity.kind.value}_alias", alias))
+        ordered.extend(_hashed_key(f"{entity.kind.value}_alias", alias) for alias in entity.aliases)
     return tuple(dict.fromkeys(ordered))
 
 
@@ -1058,8 +1003,7 @@ def stable_evidence_hash(payload: object) -> str:
 def _hashed_key(namespace: str, value: str) -> str:
     clean_namespace = _clean_identifier(namespace, 80).casefold() or "key"
     clean_value = " ".join(str(value).casefold().split()).strip()
-    digest = hashlib.sha256(clean_value.encode("utf-8")).hexdigest()
-    return f"{clean_namespace}:{digest}"
+    return f"{clean_namespace}:{hashlib.sha256(clean_value.encode('utf-8')).hexdigest()}"
 
 
 def _bounded_confidence(value: float) -> float:
@@ -1070,19 +1014,14 @@ def _bounded_confidence(value: float) -> float:
 
 
 def _clean_identifier(value: object, limit: int) -> str:
-    clean = " ".join(str(value).split()).strip()
-    return clean[:limit]
+    return " ".join(str(value).split()).strip()[:limit]
 
 
 def _clean_text(value: object, limit: int) -> str:
     return " ".join(str(value).split()).strip()[:limit]
 
 
-def _bounded_map(
-    payload: dict[str, object],
-    *,
-    max_items: int = 40,
-) -> dict[str, object]:
+def _bounded_map(payload: dict[str, object], *, max_items: int = 40) -> dict[str, object]:
     clean: dict[str, object] = {}
     for key, value in list(payload.items())[:max_items]:
         name = _clean_identifier(key, 100)
@@ -1112,9 +1051,7 @@ def _optional_float(value: object) -> float | None:
 
 
 def _string_list(value: object, limit: int) -> list[str]:
-    if not isinstance(value, list):
-        return []
-    return [str(item)[:500] for item in value[:limit]]
+    return [str(item)[:500] for item in value[:limit]] if isinstance(value, list) else []
 
 
 def _provenance_list(value: object) -> list[ProvenanceRef]:
@@ -1127,11 +1064,11 @@ def _provenance_list(value: object) -> list[ProvenanceRef]:
         try:
             output.append(
                 ProvenanceRef(
-                    source=str(item.get("source") or ""),
-                    source_id=str(item.get("source_id") or ""),
-                    observed_at=float(item.get("observed_at") or 0.0),
-                    locator=str(item.get("locator") or ""),
-                    content_hash=str(item.get("content_hash") or ""),
+                    str(item.get("source") or ""),
+                    str(item.get("source_id") or ""),
+                    float(item.get("observed_at") or 0.0),
+                    str(item.get("locator") or ""),
+                    str(item.get("content_hash") or ""),
                 )
             )
         except (TypeError, ValueError):
@@ -1149,12 +1086,12 @@ def _timeline_list(value: object) -> list[TimelineEntry]:
         try:
             output.append(
                 TimelineEntry(
-                    event_key=str(item.get("event_key") or ""),
-                    occurred_at=float(item.get("occurred_at") or 0.0),
-                    observed_at=float(item.get("observed_at") or 0.0),
-                    source=str(item.get("source") or ""),
-                    event_type=str(item.get("event_type") or ""),
-                    summary=str(item.get("summary") or ""),
+                    str(item.get("event_key") or ""),
+                    float(item.get("occurred_at") or 0.0),
+                    float(item.get("observed_at") or 0.0),
+                    str(item.get("source") or ""),
+                    str(item.get("event_type") or ""),
+                    str(item.get("summary") or ""),
                 )
             )
         except (TypeError, ValueError):
@@ -1173,18 +1110,16 @@ def _task_list(value: object) -> list[SituationTask]:
         try:
             output.append(
                 SituationTask(
-                    task_id=str(item.get("task_id") or uuid4().hex),
-                    title=str(item.get("title") or ""),
-                    action_state=ActionState(
-                        str(item.get("action_state") or ActionState.NO_ACTION.value)
-                    ),
-                    responsibility=Responsibility(
+                    str(item.get("task_id") or uuid4().hex),
+                    str(item.get("title") or ""),
+                    ActionState(str(item.get("action_state") or ActionState.NO_ACTION.value)),
+                    Responsibility(
                         str(item.get("responsibility") or Responsibility.UNCLEAR.value)
                     ),
-                    status=TaskStatus(str(item.get("status") or TaskStatus.OPEN.value)),
-                    due_at=float(item["due_at"]) if item.get("due_at") is not None else None,
-                    created_at=float(item.get("created_at") or time.time()),
-                    source_event_key=str(item.get("source_event_key") or ""),
+                    TaskStatus(str(item.get("status") or TaskStatus.OPEN.value)),
+                    float(item["due_at"]) if item.get("due_at") is not None else None,
+                    float(item.get("created_at") or time.time()),
+                    str(item.get("source_event_key") or ""),
                 )
             )
         except (TypeError, ValueError):
@@ -1202,15 +1137,13 @@ def _proposal_list(value: object) -> list[SituationProposal]:
         alternatives = item.get("alternatives")
         output.append(
             SituationProposal(
-                proposal_id=str(item.get("proposal_id") or uuid4().hex),
-                title=str(item.get("title") or ""),
-                recommendation=str(item.get("recommendation") or ""),
-                alternatives=tuple(str(x) for x in alternatives)
-                if isinstance(alternatives, list)
-                else (),
-                action_key=str(item.get("action_key") or ""),
-                risk=str(item.get("risk") or "medium"),
-                created_at=float(item.get("created_at") or time.time()),
+                str(item.get("proposal_id") or uuid4().hex),
+                str(item.get("title") or ""),
+                str(item.get("recommendation") or ""),
+                tuple(str(x) for x in alternatives) if isinstance(alternatives, list) else (),
+                str(item.get("action_key") or ""),
+                str(item.get("risk") or "medium"),
+                float(item.get("created_at") or time.time()),
             )
         )
     return output
@@ -1226,14 +1159,12 @@ def _expected_event_list(value: object) -> list[ExpectedEvent]:
         try:
             output.append(
                 ExpectedEvent(
-                    expected_event_id=str(item.get("expected_event_id") or uuid4().hex),
-                    kind=str(item.get("kind") or ""),
-                    due_at=float(item.get("due_at") or 0.0),
-                    description=str(item.get("description") or ""),
-                    satisfied_at=float(item["satisfied_at"])
-                    if item.get("satisfied_at") is not None
-                    else None,
-                    source_event_key=str(item.get("source_event_key") or ""),
+                    str(item.get("expected_event_id") or uuid4().hex),
+                    str(item.get("kind") or ""),
+                    float(item.get("due_at") or 0.0),
+                    str(item.get("description") or ""),
+                    float(item["satisfied_at"]) if item.get("satisfied_at") is not None else None,
+                    str(item.get("source_event_key") or ""),
                 )
             )
         except (TypeError, ValueError):
@@ -1251,12 +1182,12 @@ def _outcome_list(value: object) -> list[VerifiedOutcome]:
         proof = item.get("proof")
         output.append(
             VerifiedOutcome(
-                outcome_id=str(item.get("outcome_id") or uuid4().hex),
-                action_id=str(item.get("action_id") or ""),
-                outcome_type=str(item.get("outcome_type") or ""),
-                verified=bool(item.get("verified")),
-                proof=_bounded_map(proof) if isinstance(proof, dict) else {},
-                occurred_at=float(item.get("occurred_at") or time.time()),
+                str(item.get("outcome_id") or uuid4().hex),
+                str(item.get("action_id") or ""),
+                str(item.get("outcome_type") or ""),
+                bool(item.get("verified")),
+                _bounded_map(proof) if isinstance(proof, dict) else {},
+                float(item.get("occurred_at") or time.time()),
             )
         )
     return output
@@ -1265,16 +1196,13 @@ def _outcome_list(value: object) -> list[VerifiedOutcome]:
 def _state_history_list(value: object) -> list[StateTransition]:
     if not isinstance(value, list):
         return []
-    output: list[StateTransition] = []
-    for item in value[:200]:
-        if not isinstance(item, dict):
-            continue
-        output.append(
-            StateTransition(
-                from_state=str(item.get("from_state") or ""),
-                to_state=str(item.get("to_state") or ""),
-                changed_at=float(item.get("changed_at") or time.time()),
-                reason=str(item.get("reason") or ""),
-            )
+    return [
+        StateTransition(
+            str(item.get("from_state") or ""),
+            str(item.get("to_state") or ""),
+            float(item.get("changed_at") or time.time()),
+            str(item.get("reason") or ""),
         )
-    return output
+        for item in value[:200]
+        if isinstance(item, dict)
+    ]
