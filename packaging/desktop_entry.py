@@ -64,7 +64,7 @@ from jarvis_papa.onboarding import run_first_launch_onboarding
 
 install_desktop_api_auth()
 
-from jarvis_papa.professional_desktop_plus import run
+from jarvis_papa.activity_desktop import run
 
 
 if __name__ == "__main__":
