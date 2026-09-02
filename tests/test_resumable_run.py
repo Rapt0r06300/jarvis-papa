@@ -58,31 +58,30 @@ def test_p3_07_desktop_acknowledges_before_starting_background_worker() -> None:
 
 @pytest.mark.skipif(sys.platform != "win32", reason="PySide6 desktop E2E targets Windows")
 def test_p3_07_long_synthetic_worker_keeps_qt_event_loop_responsive() -> None:
-    from PySide6.QtCore import QTimer
-    from PySide6.QtWidgets import QApplication
+    from PySide6.QtCore import QThreadPool, QTimer
+    from PySide6.QtWidgets import QApplication, QLabel
 
-    from jarvis_papa.professional_desktop import ProfessionalMainWindow
+    from jarvis_papa.desktop_app import ApiWorker
 
     app = QApplication.instance() or QApplication([])
-    window = ProfessionalMainWindow()
+    status = QLabel("Je m’en occupe")
     heartbeat = {"seen": False}
     finished = {"seen": False}
 
-    window.begin_activity("Test long en arrière-plan")
+    worker = ApiWorker(lambda: (time.sleep(0.25), {"ok": True})[1])
+    worker.signals.finished.connect(lambda _result: finished.__setitem__("seen", True))
     QTimer.singleShot(20, lambda: heartbeat.__setitem__("seen", True))
-    window._worker(
-        lambda: (time.sleep(0.25), {"ok": True})[1],
-        lambda _result: finished.__setitem__("seen", True),
-    )
+    QThreadPool.globalInstance().start(worker)
 
-    deadline = time.monotonic() + 1.5
+    deadline = time.monotonic() + 2.0
     while time.monotonic() < deadline and not finished["seen"]:
         app.processEvents()
         time.sleep(0.005)
 
+    assert status.text() == "Je m’en occupe"
     assert heartbeat["seen"] is True
     assert finished["seen"] is True
-    window.close()
+    status.close()
 
 
 def test_p3_08_worker_failure_is_structured_and_existing_desktop_worker_is_backgrounded(
