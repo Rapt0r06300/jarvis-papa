@@ -9,6 +9,8 @@ from zoneinfo import ZoneInfo
 
 from jarvis_papa.situations import (
     ActionState,
+    EntityKind,
+    EntityRef,
     EntityRelation,
     ExpectedEvent,
     MatchState,
@@ -20,9 +22,33 @@ from jarvis_papa.situations import (
     SituationTask,
     TaskStatus,
     VerifiedOutcome,
+    transition_situation,
 )
 
 _PARIS = ZoneInfo("Europe/Paris")
+_STRONG_SUBJECT_NAMESPACES = frozenset(
+    {
+        "order",
+        "tracking",
+        "thread",
+        "conversation",
+        "transaction",
+        "document",
+        "listing",
+        "account",
+    }
+)
+_STRONG_ENTITY_KINDS = frozenset(
+    {
+        EntityKind.ORDER,
+        EntityKind.SHIPMENT,
+        EntityKind.TRANSACTION,
+        EntityKind.DOCUMENT,
+        EntityKind.LISTING,
+        EntityKind.CONVERSATION,
+        EntityKind.ACCOUNT,
+    }
+)
 
 
 class OutcomeState(StrEnum):
@@ -131,6 +157,58 @@ def confidence_label(score: float) -> str:
 
 def present_paris_timestamp(timestamp: float) -> str:
     return datetime.fromtimestamp(float(timestamp), tz=_PARIS).isoformat(timespec="seconds")
+
+
+def strong_correlation_keys(
+    event: NormalizedEvent,
+    *,
+    entities: tuple[EntityRef, ...] | list[EntityRef] = (),
+) -> tuple[str, ...]:
+    """Only deterministic/native identifiers are allowed to merge situations.
+
+    Weak names and aliases remain useful as relation evidence/search terms but
+    never become irreversible merge keys.
+    """
+
+    keys = [f"event:{event.identity_key}"]
+    for ref in event.subject_refs:
+        namespace, separator, raw_value = ref.partition(":")
+        if separator and namespace.casefold() in _STRONG_SUBJECT_NAMESPACES:
+            keys.append(_hashed_key(namespace, raw_value))
+    for entity in entities:
+        if entity.kind in _STRONG_ENTITY_KINDS:
+            keys.append(f"entity:{entity.entity_id}")
+    return tuple(dict.fromkeys(keys))
+
+
+def transition_with_evidence(
+    situation: Situation,
+    new_state: str,
+    *,
+    reason: str,
+    provenance: ProvenanceRef,
+    changed_at: float | None = None,
+) -> Situation:
+    before = situation.state
+    at = float(changed_at or provenance.observed_at or time.time())
+    transition_situation(situation, new_state, reason=reason, changed_at=at)
+    if before == situation.state:
+        return situation
+    raw = situation.metadata.get("transition_provenance")
+    rows = list(raw) if isinstance(raw, list) else []
+    rows.append(
+        {
+            "from_state": before,
+            "to_state": situation.state,
+            "changed_at": at,
+            "source": provenance.source,
+            "source_id": provenance.source_id,
+            "locator": provenance.locator,
+            "content_hash": provenance.content_hash,
+        }
+    )
+    situation.metadata["transition_provenance"] = rows[-100:]
+    return situation
 
 
 def promote_relation(
@@ -288,6 +366,13 @@ def apply_action_outcome(
         for task in situation.tasks
     ]
     return True
+
+
+def _hashed_key(namespace: str, value: str) -> str:
+    clean_namespace = " ".join(namespace.casefold().split()).strip()[:80]
+    clean_value = " ".join(value.casefold().split()).strip()
+    digest = hashlib.sha256(clean_value.encode("utf-8")).hexdigest()
+    return f"{clean_namespace}:{digest}"
 
 
 def _expected_controls(situation: Situation) -> dict[str, dict[str, object]]:
