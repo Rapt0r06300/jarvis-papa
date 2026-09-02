@@ -132,11 +132,16 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
           JARVIS_SKIP_ONBOARDING: "1"
+          JARVIS_LOCAL_API_TOKEN: "jarvis-github-actions-smoke-token"
         run: |
           $qwenWorker = "dist\Jarvis\_internal\jarvis_papa\voice\qwen_worker.py"
           if (-not (Test-Path $qwenWorker)) { throw "Qwen worker is missing from Jarvis bundle" }
           $version = (Get-Item "dist\Jarvis\Jarvis.exe").VersionInfo.ProductVersion
           if (-not $version.StartsWith("0.7.0")) { throw "Jarvis.exe metadata version is invalid: $version" }
+          $headers = @{
+            Authorization = "Bearer $env:JARVIS_LOCAL_API_TOKEN"
+            "X-Jarvis-Client" = "github-actions-smoke"
+          }
           $process = Start-Process -FilePath "dist\Jarvis\Jarvis.exe" -PassThru
           $healthy = $false
           try {
@@ -147,7 +152,7 @@ jobs:
                 if ($health.status -eq "ok") {
                   $status = Invoke-RestMethod -Uri "http://127.0.0.1:8765/api/status" -TimeoutSec 2
                   if ($status.version -ne "0.7.0") { throw "Unexpected Jarvis version: $($status.version)" }
-                  $maintenance = Invoke-RestMethod -Uri "http://127.0.0.1:8765/api/maintenance/status" -TimeoutSec 2
+                  $maintenance = Invoke-RestMethod -Uri "http://127.0.0.1:8765/api/maintenance/status" -Headers $headers -TimeoutSec 2
                   if (-not ($maintenance.PSObject.Properties.Name -contains "updates")) {
                     throw "Maintenance reliability contract is missing from packaged app"
                   }
@@ -238,6 +243,7 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
           JARVIS_SKIP_ONBOARDING: "1"
+          JARVIS_LOCAL_API_TOKEN: "jarvis-github-actions-e2e-token"
         run: |
           $setup = (Resolve-Path "installer-output\Jarvis-Setup.exe").Path
           $setupHash = (Get-FileHash $setup -Algorithm SHA256).Hash
@@ -245,6 +251,10 @@ jobs:
           $dataDir = Join-Path $env:LOCALAPPDATA "JarvisPapa"
           $legacyEnv = Join-Path $dataDir ".env"
           $startupKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+          $headers = @{
+            Authorization = "Bearer $env:JARVIS_LOCAL_API_TOKEN"
+            "X-Jarvis-Client" = "github-actions-e2e"
+          }
           Remove-Item $installDir -Recurse -Force -ErrorAction SilentlyContinue
           Remove-Item $dataDir -Recurse -Force -ErrorAction SilentlyContinue
 
@@ -282,7 +292,7 @@ jobs:
                   if ($health.status -eq "ok") {
                     $status = Invoke-RestMethod -Uri "http://127.0.0.1:8765/api/status" -TimeoutSec 2
                     if ($status.version -ne "0.7.0") { throw "Installed Jarvis version mismatch" }
-                    $maintenance = Invoke-RestMethod -Uri "http://127.0.0.1:8765/api/maintenance/status" -TimeoutSec 2
+                    $maintenance = Invoke-RestMethod -Uri "http://127.0.0.1:8765/api/maintenance/status" -Headers $headers -TimeoutSec 2
                     if (-not ($maintenance.PSObject.Properties.Name -contains "restore")) {
                       throw "Installed Jarvis is missing maintenance status"
                     }
