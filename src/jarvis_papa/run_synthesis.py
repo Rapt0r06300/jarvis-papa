@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import StrEnum
 
 from jarvis_papa.situation_store import SituationStore
@@ -166,5 +166,5 @@ def _freshness_state(
 
 
 def _format_observed_at(observed_at: float) -> str:
-    value = datetime.fromtimestamp(float(observed_at), timezone.utc)
+    value = datetime.fromtimestamp(float(observed_at), UTC)
     return value.strftime("%Y-%m-%d %H:%M UTC")
