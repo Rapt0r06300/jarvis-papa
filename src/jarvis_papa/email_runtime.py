@@ -72,25 +72,20 @@ def extract_email_commitments(
     message: EmailMessage,
     meaning: StructuredEmailMeaning | None = None,
 ) -> tuple[EmailCommitment, ...]:
-    """Extend the existing read-only commitment detector with actor/date normalization."""
+    """Reuse the existing detector and add actor/date normalization."""
     output: list[EmailCommitment] = []
-    actor = "father" if not message.sender_is_father else "father"
     detected = commitment_extractor.detect(
         message.body,
         source_hint=f"email:{message.message_id}",
     )
     for item in detected:
-        source_wording = _deadline_source_wording(message.body, item.deadline)
-        due_date = _normalize_deadline(
-            item.deadline or source_wording,
-            message.received_at,
-        )
+        wording = _deadline_source_wording(message.body, item.deadline)
         output.append(
             EmailCommitment(
-                actor=actor,
+                actor="father",
                 obligation=item.action,
-                due_date=due_date,
-                source_wording=source_wording,
+                due_date=_normalize_deadline(item.deadline or wording, message.received_at),
+                source_wording=wording,
                 confidence=item.confidence,
                 provenance=message.provenance,
             )
@@ -111,14 +106,13 @@ def extract_email_commitments(
         )
 
     if meaning is not None and meaning.requested_action:
-        normalized_due = meaning.deadline
         key = meaning.requested_action.casefold()
         if not any(item.obligation.casefold() == key for item in output):
             output.append(
                 EmailCommitment(
                     actor="father",
                     obligation=meaning.requested_action,
-                    due_date=normalized_due,
+                    due_date=meaning.deadline,
                     source_wording=_deadline_source_wording(message.body, None),
                     confidence=max(0.55, meaning.confidence),
                     provenance=message.provenance,
@@ -152,12 +146,13 @@ class RuntimeEmailThreadState(EmailThreadState):
 
         new_commitments = extract_email_commitments(message, meaning)
         for item in new_commitments:
-            if not any(
+            duplicate = any(
                 existing.actor == item.actor
                 and existing.obligation.casefold() == item.obligation.casefold()
                 and existing.due_date == item.due_date
                 for existing in self.commitments
-            ):
+            )
+            if not duplicate:
                 self.commitments.append(item)
         self.commitments = self.commitments[-50:]
         if new_commitments:
@@ -166,9 +161,8 @@ class RuntimeEmailThreadState(EmailThreadState):
             if latest.due_date:
                 self.deadline = latest.due_date
 
-        father_future = message.sender_is_father and any(
-            item.actor == "father" and _looks_future_promise(message.body)
-            for item in new_commitments
+        father_future = message.sender_is_father and bool(new_commitments) and _looks_future_promise(
+            message.body
         )
         if father_future:
             self.action_state = (
@@ -284,17 +278,18 @@ def assess_email_trust(message: EmailMessage) -> EmailTrustAssessment:
     display = _sender_display_name(message.sender).casefold()
     official_for_brand: tuple[str, ...] = ()
     for names, domains in _OFFICIAL_BRANDS:
-        if any(name in display for name in names):
-            official_for_brand = domains
-            if not domain_matches_official(sender_domain, domains):
-                signals.append(
-                    TrustSignal(
-                        "brand_domain_mismatch",
-                        f"display brand does not align with sender domain {sender_domain or 'unknown'}",
-                        0.82,
-                    )
+        if not any(name in display for name in names):
+            continue
+        official_for_brand = domains
+        if not domain_matches_official(sender_domain, domains):
+            signals.append(
+                TrustSignal(
+                    "brand_domain_mismatch",
+                    f"display brand does not align with sender domain {sender_domain or 'unknown'}",
+                    0.82,
                 )
-            break
+            )
+        break
 
     for raw_url in _extract_urls(message.body):
         parsed = urlparse(raw_url)
@@ -314,7 +309,8 @@ def assess_email_trust(message: EmailMessage) -> EmailTrustAssessment:
             )
 
     lower = f"{message.subject} {message.body}".casefold()
-    if any(term in lower for term in ("urgent", "immédiatement", "immediatement", "sous 24h")):
+    urgency = ("urgent", "immédiatement", "immediatement", "sous 24h")
+    if any(term in lower for term in urgency):
         signals.append(TrustSignal("urgency_cue", "urgency language present", 0.62))
 
     certainty = min(0.92, 0.35 + sum(item.confidence for item in signals) / 6.0)
@@ -341,6 +337,8 @@ class SanitizedEmailHtml:
 
 
 class _SafeEmailHtmlParser(HTMLParser):
+    _active_tags = {"script", "style", "iframe", "object", "embed", "form"}
+
     def __init__(self, provenance: ProvenanceRef) -> None:
         super().__init__(convert_charrefs=True)
         self.provenance = provenance
@@ -353,7 +351,7 @@ class _SafeEmailHtmlParser(HTMLParser):
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         lower = tag.casefold()
         attributes = {key.casefold(): value or "" for key, value in attrs}
-        if lower in {"script", "style", "iframe", "object", "embed", "form"}:
+        if lower in self._active_tags:
             self.blocked_active_count += 1
             self._blocked_depth += 1
             return
@@ -371,11 +369,12 @@ class _SafeEmailHtmlParser(HTMLParser):
             self.text_parts.append(" ")
 
     def handle_endtag(self, tag: str) -> None:
-        if tag.casefold() in {"script", "style", "iframe", "object", "embed", "form"}:
+        lower = tag.casefold()
+        if lower in self._active_tags:
             if self._blocked_depth:
                 self._blocked_depth -= 1
             return
-        if not self._blocked_depth and tag.casefold() in {"p", "div", "li", "tr"}:
+        if not self._blocked_depth and lower in {"p", "div", "li", "tr"}:
             self.text_parts.append(" ")
 
     def handle_data(self, data: str) -> None:
@@ -388,7 +387,7 @@ def sanitize_email_html(html: str, *, provenance: ProvenanceRef) -> SanitizedEma
     try:
         parser.feed(str(html)[:200_000])
         parser.close()
-    except (ValueError, TypeError):
+    except (TypeError, ValueError):
         pass
     text = " ".join(unescape("".join(parser.text_parts)).split())[:20_000]
     return SanitizedEmailHtml(
@@ -472,11 +471,10 @@ class EmailWorkItem:
 
 
 def prioritize_email_work(items: list[EmailWorkItem]) -> list[EmailWorkItem]:
-    return sorted(list(items), key=_email_work_key)
+    return sorted(items, key=_email_work_key)
 
 
 def _email_work_key(item: EmailWorkItem) -> tuple[int, int, int, float, str]:
-    lane_rank = 0 if item.lane == "live" else 1
     evidence_backed = item.decision.confidence >= 0.7
     importance = 3
     if evidence_backed and item.decision.intent is EmailIntent.BANK_SECURITY:
@@ -492,9 +490,10 @@ def _email_work_key(item: EmailWorkItem) -> tuple[int, int, int, float, str]:
         importance = 1
     elif item.decision.intent in {EmailIntent.NEWSLETTER, EmailIntent.NOISE}:
         importance = 5
+    lane_rank = 0 if item.lane == "live" else 1
     return (
-        lane_rank,
         importance,
+        lane_rank,
         item.sequence,
         -item.message.received_at,
         item.message.message_id,
@@ -534,19 +533,12 @@ def compact_email_thread(
             if entity not in entities:
                 entities.append(entity)
         for evidence in meaning.provenance:
-            if not any(
-                item.source == evidence.source and item.source_id == evidence.source_id
-                for item in provenance
-            ):
+            if not _contains_provenance(provenance, evidence):
                 provenance.append(evidence)
     for evidence in state.evidence:
-        if not any(
-            item.source == evidence.source and item.source_id == evidence.source_id
-            for item in provenance
-        ):
+        if not _contains_provenance(provenance, evidence):
             provenance.append(evidence)
 
-    selected = list(messages[-cap:])
     recent = tuple(
         {
             "message_id": item.message_id,
@@ -554,7 +546,7 @@ def compact_email_thread(
             "subject": item.subject[:300],
             "received_at": item.received_at,
         }
-        for item in selected
+        for item in messages[-cap:]
     )
     return ThreadCompactSummary(
         thread_key=state.thread_key,
@@ -572,20 +564,25 @@ def compact_email_thread(
     )
 
 
+def _contains_provenance(items: list[ProvenanceRef], candidate: ProvenanceRef) -> bool:
+    return any(
+        item.source == candidate.source and item.source_id == candidate.source_id for item in items
+    )
+
+
 def _future_father_promise(message: EmailMessage) -> tuple[str, str, str | None] | None:
     if not message.sender_is_father:
         return None
     text = " ".join(message.body.split())
     patterns = (
-        r"\bje\s+vous\s+l['’]enverrai\s+([^.!?]{2,80})",
-        r"\bje\s+vous\s+(?:enverrai|transmettrai)\s+([^.!?]{2,160})",
-        r"\bje\s+vais\s+vous\s+(?:envoyer|transmettre)\s+([^.!?]{2,160})",
+        r"\bje\s+vous\s+l['’]enverrai\s+[^.!?]{2,80}",
+        r"\bje\s+vous\s+(?:enverrai|transmettrai)\s+[^.!?]{2,160}",
+        r"\bje\s+vais\s+vous\s+(?:envoyer|transmettre)\s+[^.!?]{2,160}",
     )
     for pattern in patterns:
         match = re.search(pattern, text, flags=re.IGNORECASE)
         if not match:
             continue
-        tail = match.group(1).strip()
         wording = _deadline_source_wording(text, None)
         due = _normalize_deadline(wording, message.received_at)
         obligation = "Envoyer le document promis"
@@ -597,16 +594,14 @@ def _future_father_promise(message: EmailMessage) -> tuple[str, str, str | None]
 
 def _looks_future_promise(text: str) -> bool:
     lower = text.casefold().replace("’", "'")
-    return any(
-        marker in lower
-        for marker in (
-            "je vous l'enverrai",
-            "je vous enverrai",
-            "je vous transmettrai",
-            "je vais vous envoyer",
-            "je vais vous transmettre",
-        )
+    markers = (
+        "je vous l'enverrai",
+        "je vous enverrai",
+        "je vous transmettrai",
+        "je vais vous envoyer",
+        "je vais vous transmettre",
     )
+    return any(marker in lower for marker in markers)
 
 
 def _deadline_source_wording(text: str, detector_deadline: str | None) -> str:
@@ -633,11 +628,12 @@ def _normalize_deadline(raw: str | None, observed_at: float) -> str | None:
     if "demain" in value:
         return (local.date() + timedelta(days=1)).isoformat()
     for name, weekday in _WEEKDAYS.items():
-        if name in value:
-            delta = (weekday - local.weekday()) % 7
-            if delta == 0:
-                delta = 7
-            return (local.date() + timedelta(days=delta)).isoformat()
+        if name not in value:
+            continue
+        delta = (weekday - local.weekday()) % 7
+        if delta == 0:
+            delta = 7
+        return (local.date() + timedelta(days=delta)).isoformat()
     numeric = re.search(r"([0-3]?\d)[/-]([01]?\d)(?:[/-](\d{2,4}))?", value)
     if numeric:
         day = int(numeric.group(1))
