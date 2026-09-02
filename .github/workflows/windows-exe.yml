@@ -12,11 +12,14 @@ on:
       - "tests/**"
       - "pyproject.toml"
       - ".env.example"
+      - ".gitattributes"
       - ".github/workflows/windows-exe.yml"
       - ".github/workflows/release.yml"
 
 permissions:
-  contents: write
+  contents: read
+  id-token: write
+  attestations: write
 
 jobs:
   build-windows-exe:
@@ -24,10 +27,12 @@ jobs:
     timeout-minutes: 45
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -382,8 +387,13 @@ jobs:
           $setupHash = (Get-FileHash "installer-output\Jarvis-Setup.exe" -Algorithm SHA256).Hash.ToLowerInvariant()
           "$setupHash  Jarvis-Setup.exe" | Set-Content "installer-output\Jarvis-Setup.exe.sha256" -Encoding ascii
 
+      - name: Attest final Windows installer provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: installer-output/Jarvis-Setup.exe
+
       - name: Upload final Windows installer artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: Jarvis-Setup-0.7.0
           path: |
@@ -393,3 +403,4 @@ jobs:
             installer-output/signing-status.txt
           if-no-files-found: error
           retention-days: 30
+          compression-level: 0
