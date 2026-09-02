@@ -4,7 +4,6 @@ import hashlib
 import re
 from dataclasses import dataclass, field
 from datetime import date
-from email.utils import parseaddr
 from enum import StrEnum
 
 from jarvis_papa.mail import IncomingMail, mail_assistant
@@ -94,9 +93,7 @@ class EmailMessage:
             source_id=self.message_id,
             observed_at=self.received_at,
             locator=f"{self.source_id}:{self.folder}",
-            content_hash=_sha256(
-                f"{self.sender}\n{self.subject}\n{self.body}".encode()
-            ),
+            content_hash=_sha256(f"{self.sender}\n{self.subject}\n{self.body}".encode()),
         )
 
     def bounded_context(self, *, max_chars: int = 6000) -> dict[str, object]:
@@ -598,8 +595,7 @@ class EmailIntelligence:
 def derive_thread_identity(message: EmailMessage) -> ThreadIdentity:
     if message.platform_thread_id:
         return ThreadIdentity(
-            key="platform:"
-            + _sha256(message.platform_thread_id.casefold().encode()),
+            key="platform:" + _sha256(message.platform_thread_id.casefold().encode()),
             confidence=1.0,
             method="platform_thread_id",
         )
@@ -623,7 +619,7 @@ def derive_thread_identity(message: EmailMessage) -> ThreadIdentity:
             method="message_id_root",
         )
     subject = _normalized_subject(message.subject)
-    sender_address = parseaddr(message.sender)[1].casefold()
+    sender_address = _extract_sender_address(message.sender)
     if subject:
         fallback_material = f"{subject}|{_sender_domain(sender_address)}"
         return ThreadIdentity(
@@ -709,6 +705,13 @@ def _normalized_subject(subject: str) -> str:
 def _looks_like_standard_message_id(value: str) -> bool:
     clean = value.strip()
     return clean.startswith("<") and clean.endswith(">") and "@" in clean
+
+
+def _extract_sender_address(sender: str) -> str:
+    match = re.search(r"<([^<>]+)>", sender)
+    if match:
+        return match.group(1).casefold().strip()
+    return sender.casefold().strip()
 
 
 def _sender_domain(address: str) -> str:
