@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import logging
 import queue
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Callable
+from typing import ClassVar
 
 from jarvis_papa.situations import ProvenanceRef
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class RuntimeProgressType(StrEnum):
@@ -89,7 +93,7 @@ class RuntimeProgressEvent:
         except ValueError as exc:
             raise ValueError("invalid runtime progress enum value") from exc
         if not isinstance(run_id, RunId) or not isinstance(stage_id, StageId):
-            raise ValueError("runtime progress requires typed run and stage ids")
+            raise TypeError("runtime progress requires typed run and stage ids")
         at = float(timestamp)
         if at <= 0:
             raise ValueError("runtime progress timestamp must be positive")
@@ -97,9 +101,9 @@ class RuntimeProgressEvent:
         if bounded_progress is not None and not 0.0 <= bounded_progress <= 1.0:
             raise ValueError("progress must be between 0 and 1")
         label = " ".join(str(public_label).split()).strip()[:500]
-        refs = tuple(item for item in evidence if isinstance(item, ProvenanceRef))[:32]
-        if len(refs) != len(tuple(evidence)[:32]):
-            raise ValueError("runtime progress evidence must use ProvenanceRef")
+        raw_evidence = tuple(evidence)[:32]
+        if any(not isinstance(item, ProvenanceRef) for item in raw_evidence):
+            raise TypeError("runtime progress evidence must use ProvenanceRef")
         if typed_event is RuntimeProgressType.STAGE_COMPLETED and typed_outcome is None:
             typed_outcome = StageOutcome.COMPLETED
         return cls(
@@ -108,7 +112,7 @@ class RuntimeProgressEvent:
             stage_id=stage_id,
             timestamp=at,
             public_label=label,
-            evidence=refs,
+            evidence=raw_evidence,
             progress=bounded_progress,
             importance=typed_importance,
             outcome=typed_outcome,
@@ -169,9 +173,8 @@ class RuntimeProgressSubscription:
                 continue
             try:
                 self._callback(item)
-            except Exception:
-                # A broken UI/TTS consumer must not crash or block core work.
-                continue
+            except Exception:  # noqa: BLE001
+                _LOGGER.exception("Runtime progress subscriber %s failed", self.name)
 
 
 class RuntimeProgressBus:
@@ -232,7 +235,7 @@ class TruthfulProgressNarrator:
         if event.event_type is RuntimeProgressType.PROGRESS_UPDATE:
             if event.progress is None:
                 return f"{label}." if label else "Analyse en cours."
-            percent = int(round(event.progress * 100))
+            percent = round(event.progress * 100)
             return f"{label} — {percent} %." if label else f"Progression : {percent} %."
         if event.event_type is RuntimeProgressType.DISCOVERY:
             return f"{label}." if label else "Nouvelle information détectée."
@@ -242,19 +245,31 @@ class TruthfulProgressNarrator:
             return f"{label}." if label else "Votre décision est nécessaire."
         if event.event_type is RuntimeProgressType.STAGE_COMPLETED:
             if event.outcome is StageOutcome.FAILED:
-                return f"Échec ou interruption : {label}." if label else "Étape interrompue en échec."
+                return (
+                    f"Échec ou interruption : {label}."
+                    if label
+                    else "Étape interrompue en échec."
+                )
             if event.outcome is StageOutcome.SKIPPED:
                 return f"Étape ignorée : {label}." if label else "Étape ignorée."
-            return f"Étape terminée avec succès : {label}." if label else "Étape terminée avec succès."
+            return (
+                f"Étape terminée avec succès : {label}."
+                if label
+                else "Étape terminée avec succès."
+            )
         if event.event_type is RuntimeProgressType.RUN_COMPLETED:
             return f"{label}." if label else "Analyse terminée."
         if event.event_type is RuntimeProgressType.RUN_FAILED:
-            return f"Échec ou interruption : {label}." if label else "Analyse interrompue en échec."
+            return (
+                f"Échec ou interruption : {label}."
+                if label
+                else "Analyse interrompue en échec."
+            )
         raise ValueError("unsupported runtime progress event")
 
 
 class WorkflowProgressAdapter:
-    _STAGES: dict[str, str] = {
+    _STAGES: ClassVar[dict[str, str]] = {
         "email_triage": "Analyse des nouveaux messages",
         "situation_correlation": "Regroupement des informations liées",
         "order_parcel_check": "Vérification des commandes et colis",
@@ -406,7 +421,10 @@ def _coalesce_group(events: list[RuntimeProgressEvent]) -> CoalescedProgressUpda
     text = narrator.narrate(primary)
     if len(text) > 239:
         text = text[:236].rstrip() + "…"
-    importance = max(events, key=lambda item: _IMPORTANCE_RANK[item.importance]).importance
+    importance = max(
+        events,
+        key=lambda item: _IMPORTANCE_RANK[item.importance],
+    ).importance
     return CoalescedProgressUpdate(
         text=text,
         importance=importance,
