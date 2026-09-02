@@ -393,14 +393,3 @@ jobs:
             installer-output/signing-status.txt
           if-no-files-found: error
           retention-days: 30
-
-      - name: Remove temporary closure branch after successful main build
-        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: pwsh
-        run: |
-          gh api --method DELETE "repos/${{ github.repository }}/git/refs/heads/closure/grand-run-20260902" 2>$null
-          if ($LASTEXITCODE -ne 0) {
-            Write-Host "Temporary branch is already absent or could not be deleted; main remains authoritative."
-          }
