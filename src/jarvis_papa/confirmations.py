@@ -37,6 +37,7 @@ class _Challenge:
 class _Grant:
     token: str
     action_key: str
+    description: str
     binding_digest: str
     expires_at: float
 
@@ -116,6 +117,7 @@ class ConfirmationManager:
             grant = _Grant(
                 token=token,
                 action_key=challenge.action_key,
+                description=challenge.description,
                 binding_digest=challenge.binding_digest,
                 expires_at=now + self.grant_ttl_seconds,
             )
@@ -140,16 +142,41 @@ class ConfirmationManager:
         if not token:
             return False
         now = time.time()
-        expected_binding = self.binding_digest(binding)
+        normalized_action = action_key.strip()
+        exact_binding = binding or {}
+        expected_binding = self.binding_digest(exact_binding)
         with self._lock:
             self._cleanup_locked(now)
             # A presented grant is consumed even on mismatch. This prevents replay/probing.
             grant = self._grants.pop(token, None)
         if grant is None or grant.expires_at < now:
             return False
-        if not secrets.compare_digest(grant.action_key, action_key.strip()):
+        if not secrets.compare_digest(grant.action_key, normalized_action):
             return False
-        return secrets.compare_digest(grant.binding_digest, expected_binding)
+        if not secrets.compare_digest(grant.binding_digest, expected_binding):
+            return False
+
+        # Import lazily to keep confirmation primitives independent at module load time.
+        from jarvis_papa.governance import ActionContract, PolicyVerdict, RiskLevel, policy_kernel
+
+        contract = ActionContract.create(
+            action_key=normalized_action,
+            description=grant.description or normalized_action,
+            binding=exact_binding,
+            risk=RiskLevel.HIGH,
+            read_only=False,
+            ttl_seconds=max(5.0, grant.expires_at - now),
+        )
+        if normalized_action == "jarvis.kill_switch.clear":
+            # Recovery is the only mutation that must remain authorizable while the kill-switch is active.
+            # It still requires this exact two-step, one-time grant and is audited by the caller.
+            return True
+        policy = policy_kernel.evaluate(
+            contract,
+            authorization_present=True,
+            source="local",
+        )
+        return policy.verdict is PolicyVerdict.ALLOW
 
     @classmethod
     def binding_digest(cls, binding: dict[str, object] | None) -> str:
