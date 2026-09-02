@@ -12,8 +12,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Checkout exact release commit
+      - name: Checkout release state with Git LFS
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          lfs: true
 
       - name: Resolve project version
         id: version
@@ -31,52 +34,92 @@ jobs:
           )
           echo "value=$version" >> "$GITHUB_OUTPUT"
 
-      - name: Find successful Windows build for this exact commit
-        id: build
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          SHA: ${{ github.sha }}
+      - name: Resolve installer build provenance
+        id: provenance
         shell: bash
         run: |
-          run_id=$(gh api \
-            -H "Accept: application/vnd.github+json" \
-            "/repos/$REPO/actions/workflows/windows-exe.yml/runs?head_sha=$SHA&status=success&per_page=10" \
-            --jq '.workflow_runs[0].id // empty')
-          if [ -z "$run_id" ]; then
-            echo "No successful Windows EXE run exists for commit $SHA" >&2
+          test -f installer/build-source-sha.txt
+          test -f installer/build-run-id.txt
+          build_sha=$(tr -d '\r\n' < installer/build-source-sha.txt)
+          run_id=$(tr -d '\r\n' < installer/build-run-id.txt)
+          if ! [[ "$build_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Invalid installer source SHA" >&2
             exit 1
           fi
+          if ! [[ "$run_id" =~ ^[0-9]+$ ]]; then
+            echo "Invalid installer workflow run id" >&2
+            exit 1
+          fi
+          echo "build_sha=$build_sha" >> "$GITHUB_OUTPUT"
           echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
 
-      - name: Download exact Windows artifact
+      - name: Refuse release after unbuilt source changes
+        env:
+          BUILD_SHA: ${{ steps.provenance.outputs.build_sha }}
+        shell: bash
+        run: |
+          git cat-file -e "$BUILD_SHA^{commit}"
+          unexpected=$(git diff --name-only "$BUILD_SHA"..HEAD -- . ':(exclude)installer/**')
+          if [ -n "$unexpected" ]; then
+            echo "Release blocked: source/configuration changed after the installer build:" >&2
+            echo "$unexpected" >&2
+            exit 1
+          fi
+
+      - name: Verify recorded Windows run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ steps.provenance.outputs.run_id }}
+          BUILD_SHA: ${{ steps.provenance.outputs.build_sha }}
+        shell: bash
+        run: |
+          conclusion=$(gh api "repos/${{ github.repository }}/actions/runs/$RUN_ID" --jq '.conclusion')
+          head_sha=$(gh api "repos/${{ github.repository }}/actions/runs/$RUN_ID" --jq '.head_sha')
+          workflow_path=$(gh api "repos/${{ github.repository }}/actions/runs/$RUN_ID" --jq '.path')
+          head_branch=$(gh api "repos/${{ github.repository }}/actions/runs/$RUN_ID" --jq '.head_branch')
+          if [ "$conclusion" != "success" ] || [ "$head_sha" != "$BUILD_SHA" ] || \
+             [ "$workflow_path" != ".github/workflows/windows-exe.yml" ] || [ "$head_branch" != "main" ]; then
+            echo "Release blocked: recorded Windows build provenance is invalid." >&2
+            exit 1
+          fi
+
+      - name: Verify repository installer contract
+        shell: bash
+        run: |
+          test -f installer/Jarvis-Setup.exe
+          test -f installer/Jarvis-Setup.exe.sha256
+          test -f installer/deliverables.sha256
+          test -f installer/signing-status.txt
+          headline=$(head -n 1 installer/signing-status.txt | tr -d '\r\n')
+          if [ "$headline" != "SIGNED" ]; then
+            echo "Release blocked: repository installer is not Authenticode signed ($headline)" >&2
+            exit 1
+          fi
+          expected=$(awk '{print $1}' installer/Jarvis-Setup.exe.sha256 | tr 'A-F' 'a-f')
+          actual=$(sha256sum installer/Jarvis-Setup.exe | awk '{print $1}')
+          if [ "$expected" != "$actual" ]; then
+            echo "Release blocked: repository installer SHA-256 mismatch" >&2
+            exit 1
+          fi
+
+      - name: Download and cross-check exact Windows artifact
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version.outputs.value }}
-          RUN_ID: ${{ steps.build.outputs.run_id }}
+          RUN_ID: ${{ steps.provenance.outputs.run_id }}
         shell: bash
         run: |
+          rm -rf release-input
           mkdir -p release-input
           gh run download "$RUN_ID" \
             --repo "${{ github.repository }}" \
             --name "Jarvis-Setup-$VERSION" \
             --dir release-input
-
-      - name: Enforce Authenticode release contract
-        shell: bash
-        run: |
           test -f release-input/Jarvis-Setup.exe
-          test -f release-input/Jarvis-Setup.exe.sha256
-          test -f release-input/signing-status.txt
-          headline=$(head -n 1 release-input/signing-status.txt | tr -d '\r\n')
-          if [ "$headline" != "SIGNED" ]; then
-            echo "Release blocked: Windows artifact is not Authenticode signed ($headline)" >&2
-            exit 1
-          fi
-          expected=$(awk '{print $1}' release-input/Jarvis-Setup.exe.sha256 | tr 'A-F' 'a-f')
-          actual=$(sha256sum release-input/Jarvis-Setup.exe | awk '{print $1}')
-          if [ "$expected" != "$actual" ]; then
-            echo "Release blocked: installer SHA-256 mismatch" >&2
+          artifact_hash=$(sha256sum release-input/Jarvis-Setup.exe | awk '{print $1}')
+          repository_hash=$(sha256sum installer/Jarvis-Setup.exe | awk '{print $1}')
+          if [ "$artifact_hash" != "$repository_hash" ]; then
+            echo "Release blocked: repository installer differs from recorded Windows artifact." >&2
             exit 1
           fi
 
@@ -98,10 +141,12 @@ jobs:
         shell: bash
         run: |
           gh release create "v$VERSION" \
-            release-input/Jarvis-Setup.exe \
-            release-input/Jarvis-Setup.exe.sha256 \
-            release-input/deliverables.sha256 \
-            release-input/signing-status.txt \
+            installer/Jarvis-Setup.exe \
+            installer/Jarvis-Setup.exe.sha256 \
+            installer/deliverables.sha256 \
+            installer/signing-status.txt \
+            installer/build-source-sha.txt \
+            installer/build-run-id.txt \
             --repo "${{ github.repository }}" \
             --target "${{ github.sha }}" \
             --title "Jarvis Papa $VERSION" \
