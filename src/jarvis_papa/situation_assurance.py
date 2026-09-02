@@ -135,6 +135,11 @@ class ActionOutcome:
             float(occurred_at or time.time()),
         )
 
+    def __hash__(self) -> int:
+        """Stable identity hash; mutable evidence content is intentionally excluded."""
+
+        return hash(self.outcome_id)
+
     @property
     def verified(self) -> bool:
         return self.state is OutcomeState.VERIFIED and self.confidence >= 0.8
