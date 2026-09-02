@@ -55,9 +55,9 @@ class UpdateManager:
             response.raise_for_status()
             payload = response.json()
             manifest = self._parse_manifest(payload)
+            newer = self._version_tuple(manifest.version) > self._version_tuple(self.current_version)
         except (httpx.HTTPError, ValueError, TypeError, json.JSONDecodeError) as exc:
             return {"ok": False, "state": "failed", "detail": str(exc)}
-        newer = self._version_tuple(manifest.version) > self._version_tuple(self.current_version)
         return {
             "ok": True,
             "state": "success",
@@ -72,6 +72,15 @@ class UpdateManager:
         }
 
     def stage(self, manifest: UpdateManifest) -> dict[str, object]:
+        try:
+            if self._version_tuple(manifest.version) <= self._version_tuple(self.current_version):
+                return {
+                    "ok": False,
+                    "state": "failed",
+                    "detail": "Jarvis refuse d'installer automatiquement une version identique ou plus ancienne.",
+                }
+        except ValueError as exc:
+            return {"ok": False, "state": "failed", "detail": str(exc)}
         if not self._safe_https_url(manifest.installer_url):
             return {"ok": False, "state": "failed", "detail": "URL d'installeur non sûre."}
         if len(manifest.sha256) != 64 or any(
@@ -244,7 +253,10 @@ class UpdateManager:
     def _authenticode_status(path: Path) -> str:
         if sys.platform != "win32":
             return "NotApplicable"
-        script = "(Get-AuthenticodeSignature -LiteralPath $args[0]).Status.ToString()"
+        script = (
+            "& { param([string]$p) "
+            "(Get-AuthenticodeSignature -LiteralPath $p).Status.ToString() }"
+        )
         try:
             completed = subprocess.run(
                 ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script, str(path)],
