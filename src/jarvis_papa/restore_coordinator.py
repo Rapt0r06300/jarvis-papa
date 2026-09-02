@@ -25,12 +25,6 @@ class RestoreCoordinator:
             }
         source = Path(backup_path).expanduser().resolve()
         safety = backup_manager.create("before-staged-restore")
-        if not safety.ok and backup_manager.recent(limit=1):
-            return {
-                "ok": False,
-                "state": "failed",
-                "detail": "Restauration bloquée : la sauvegarde de sécurité préalable a échoué.",
-            }
         payload = {
             "backup_path": str(source),
             "staged_at": time.time(),
