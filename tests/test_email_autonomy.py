@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from jarvis_papa import email_runtime
+from jarvis_papa import email_autonomy, email_runtime
 from jarvis_papa.email_intelligence import (
     EmailIntent,
     EmailMessage,
@@ -43,7 +43,7 @@ def _mail(
 
 def test_p2_15_scoped_feedback_never_disables_bank_security(tmp_path) -> None:
     store = SituationStore(tmp_path / "situations.sqlite3")
-    feedback = email_runtime.EmailAutonomyStore(store)
+    feedback = email_autonomy.EmailAutonomyStore(store)
     newsletter = _mail(
         "<newsletter@example.test>",
         sender="Boutique <news@shop.example.test>",
@@ -89,14 +89,14 @@ def test_p2_15_scoped_feedback_never_disables_bank_security(tmp_path) -> None:
 
 
 def test_p2_16_draft_first_mode_cannot_send_without_existing_authorization_gate() -> None:
-    policy = email_runtime.EmailAutonomyPolicy()
-    assert policy.allowed_without_authorization(email_runtime.EmailCapability.READ)
-    assert policy.allowed_without_authorization(email_runtime.EmailCapability.UNDERSTAND)
-    assert policy.allowed_without_authorization(email_runtime.EmailCapability.DRAFT)
-    assert not policy.allowed_without_authorization(email_runtime.EmailCapability.SEND)
-    assert not policy.allowed_without_authorization(email_runtime.EmailCapability.DELETE)
+    policy = email_autonomy.EmailAutonomyPolicy()
+    assert policy.allowed_without_authorization(email_autonomy.EmailCapability.READ)
+    assert policy.allowed_without_authorization(email_autonomy.EmailCapability.UNDERSTAND)
+    assert policy.allowed_without_authorization(email_autonomy.EmailCapability.DRAFT)
+    assert not policy.allowed_without_authorization(email_autonomy.EmailCapability.SEND)
+    assert not policy.allowed_without_authorization(email_autonomy.EmailCapability.DELETE)
 
-    draft = email_runtime.PreparedEmailDraft(
+    draft = email_autonomy.PreparedEmailDraft(
         draft_id="draft-p2c",
         situation_id="situation-marketplace-1",
         recipient="buyer@example.test",
@@ -104,18 +104,18 @@ def test_p2_16_draft_first_mode_cannot_send_without_existing_authorization_gate(
         body="Bonjour, l'article est toujours disponible.",
     )
     assert draft.editable is True
-    assert draft.state is email_runtime.DraftState.PREPARED
+    assert draft.state is email_autonomy.DraftState.PREPARED
     assert draft.ui_status == "prepared"
 
     decision = policy.authorize_mutation(
-        capability=email_runtime.EmailCapability.SEND,
+        capability=email_autonomy.EmailCapability.SEND,
         token="",
         binding={"draft_id": draft.draft_id, "recipient": draft.recipient},
     )
     assert decision.ok is False
     with pytest.raises(PermissionError):
         draft.mark_sent(decision)
-    assert draft.state is email_runtime.DraftState.PREPARED
+    assert draft.state is email_autonomy.DraftState.PREPARED
     assert draft.ui_status == "prepared"
 
 
@@ -129,19 +129,25 @@ def test_p2_17_situation_draft_uses_verified_listing_price_and_omits_uncertain_f
     )
     facts = (
         EntityFact("listing_price", "150 €", 0.97, (evidence,)),
-        EntityFact("pickup_address", "Adresse peut-être obsolète", 0.40, (evidence,), inferred=True),
+        EntityFact(
+            "pickup_address",
+            "Adresse peut-être obsolète",
+            0.40,
+            (evidence,),
+            inferred=True,
+        ),
     )
-    context = email_runtime.SituationDraftContext(
+    context = email_autonomy.SituationDraftContext(
         situation_id="situation-marketplace-42",
         recipient="buyer@example.test",
         subject="Re: prix de l'annonce",
         request="Quel est votre prix ?",
         facts=facts,
     )
-    draft = email_runtime.build_situation_draft(context)
+    draft = email_autonomy.build_situation_draft(context)
     assert "150 €" in draft.body
     assert "Adresse peut-être obsolète" not in draft.body
-    assert draft.state is email_runtime.DraftState.PREPARED
+    assert draft.state is email_autonomy.DraftState.PREPARED
     assert draft.editable is True
     assert draft.situation_id == context.situation_id
     assert draft.evidence
@@ -156,7 +162,7 @@ def test_p2_18_stale_unanswered_conversation_surfaces_once_and_obeys_snooze_ack(
     state.open_question = "Le produit est-il toujours disponible ?"
     state.last_message_at = now - timedelta(days=5).total_seconds()
 
-    tracker = email_runtime.StaleConversationTracker(stale_after=timedelta(days=3))
+    tracker = email_autonomy.StaleConversationTracker(stale_after=timedelta(days=3))
     first = tracker.evaluate(state, now=now, low_value=False)
     second = tracker.evaluate(state, now=now, low_value=False)
     assert first is not None
@@ -195,7 +201,7 @@ def test_p2_18_stale_unanswered_conversation_surfaces_once_and_obeys_snooze_ack(
 
 def test_p2_19_briefing_counts_persist_and_deduplicate_by_situation(tmp_path) -> None:
     store = SituationStore(tmp_path / "situations.sqlite3")
-    autonomy = email_runtime.EmailAutonomyStore(store)
+    autonomy = email_autonomy.EmailAutonomyStore(store)
     for index in range(10):
         disposition = (
             email_runtime.BriefingDisposition.IGNORE_FOR_BRIEFING
@@ -218,7 +224,7 @@ def test_p2_19_briefing_counts_persist_and_deduplicate_by_situation(tmp_path) ->
 
 
 def test_p2_20_email_benchmark_is_reproducible_anonymized_and_reports_safety_metrics() -> None:
-    cases = email_runtime.synthetic_email_benchmark_cases()
+    cases = email_autonomy.synthetic_email_benchmark_cases()
     categories = {case.category for case in cases}
     assert {
         "newsletter",
@@ -241,12 +247,12 @@ def test_p2_20_email_benchmark_is_reproducible_anonymized_and_reports_safety_met
     assert "password=" not in serialized
     assert "bermond" not in serialized
 
-    first = email_runtime.run_email_benchmark(
+    first = email_autonomy.run_email_benchmark(
         cases,
         model_version="rules-v1",
         config_version="p2c-v1",
     )
-    second = email_runtime.run_email_benchmark(
+    second = email_autonomy.run_email_benchmark(
         cases,
         model_version="rules-v1",
         config_version="p2c-v1",
