@@ -59,22 +59,22 @@ jobs:
           mkdir -p release-input
           gh run download "$RUN_ID" \
             --repo "${{ github.repository }}" \
-            --name "JarvisPapa-Setup-$VERSION" \
+            --name "Jarvis-Setup-$VERSION" \
             --dir release-input
 
       - name: Enforce Authenticode release contract
         shell: bash
         run: |
-          test -f release-input/JarvisPapa-Setup.exe
-          test -f release-input/JarvisPapa-Setup.exe.sha256
+          test -f release-input/Jarvis-Setup.exe
+          test -f release-input/Jarvis-Setup.exe.sha256
           test -f release-input/signing-status.txt
           headline=$(head -n 1 release-input/signing-status.txt | tr -d '\r\n')
           if [ "$headline" != "SIGNED" ]; then
             echo "Release blocked: Windows artifact is not Authenticode signed ($headline)" >&2
             exit 1
           fi
-          expected=$(awk '{print $1}' release-input/JarvisPapa-Setup.exe.sha256 | tr 'A-F' 'a-f')
-          actual=$(sha256sum release-input/JarvisPapa-Setup.exe | awk '{print $1}')
+          expected=$(awk '{print $1}' release-input/Jarvis-Setup.exe.sha256 | tr 'A-F' 'a-f')
+          actual=$(sha256sum release-input/Jarvis-Setup.exe | awk '{print $1}')
           if [ "$expected" != "$actual" ]; then
             echo "Release blocked: installer SHA-256 mismatch" >&2
             exit 1
@@ -98,8 +98,8 @@ jobs:
         shell: bash
         run: |
           gh release create "v$VERSION" \
-            release-input/JarvisPapa-Setup.exe \
-            release-input/JarvisPapa-Setup.exe.sha256 \
+            release-input/Jarvis-Setup.exe \
+            release-input/Jarvis-Setup.exe.sha256 \
             release-input/deliverables.sha256 \
             release-input/signing-status.txt \
             --repo "${{ github.repository }}" \
