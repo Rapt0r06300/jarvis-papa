@@ -118,10 +118,17 @@ class BackupManager:
         self.backup_dir = self.data_dir / "backups"
 
     def create(self, label: str = "manual") -> BackupResult:
+        self.data_dir.mkdir(parents=True, exist_ok=True)
         self.backup_dir.mkdir(parents=True, exist_ok=True)
         timestamp = time.strftime("%Y%m%d-%H%M%S")
         clean_label = "".join(char for char in label.casefold() if char.isalnum() or char == "-")
         destination = self.backup_dir / f"jarvis-{clean_label or 'backup'}-{timestamp}.zip"
+        suffix = 1
+        while destination.exists():
+            destination = self.backup_dir / (
+                f"jarvis-{clean_label or 'backup'}-{timestamp}-{suffix}.zip"
+            )
+            suffix += 1
         files = self._files_to_backup()
         if not files:
             return BackupResult(False, "", 0, "Aucune donnée durable n'a été trouvée.")
@@ -151,17 +158,32 @@ class BackupManager:
         source = backup_path.expanduser().resolve()
         if not source.is_file() or source.suffix.casefold() != ".zip":
             return BackupResult(False, str(source), 0, "Sauvegarde ZIP introuvable.")
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        safety = self.create("pre-restore")
+        if not safety.ok and self._files_to_backup():
+            return BackupResult(
+                False,
+                str(source),
+                0,
+                "Restauration bloquée : la sauvegarde de sécurité préalable a échoué.",
+            )
         try:
             with zipfile.ZipFile(source) as archive:
                 members = [name for name in archive.namelist() if name != "backup-manifest.json"]
                 if not members or any(not self._safe_member(name) for name in members):
-                    return BackupResult(False, str(source), 0, "Archive invalide ou chemin non sûr.")
+                    return BackupResult(
+                        False,
+                        str(source),
+                        0,
+                        "Archive invalide ou chemin non autorisé.",
+                    )
                 with tempfile.TemporaryDirectory(dir=self.data_dir) as temp_dir:
                     extracted = Path(temp_dir)
                     archive.extractall(extracted)
                     for member in members:
-                        candidate = extracted / PurePosixPath(member)
-                        target = self.data_dir / PurePosixPath(member)
+                        relative = PurePosixPath(member)
+                        candidate = extracted.joinpath(*relative.parts)
+                        target = self.data_dir.joinpath(*relative.parts)
                         target.parent.mkdir(parents=True, exist_ok=True)
                         shutil.copy2(candidate, target)
         except (OSError, zipfile.BadZipFile) as exc:
@@ -182,6 +204,14 @@ class BackupManager:
             reverse=True,
         )
         return [str(path) for path in backups[: max(1, min(int(limit), 30))]]
+
+    def is_managed_backup(self, raw_path: str | Path) -> bool:
+        try:
+            path = Path(raw_path).expanduser().resolve()
+            path.relative_to(self.backup_dir.resolve())
+        except (OSError, ValueError):
+            return False
+        return path.is_file() and path.suffix.casefold() == ".zip"
 
     def _files_to_backup(self) -> list[tuple[Path, str]]:
         files: list[tuple[Path, str]] = []
@@ -208,7 +238,11 @@ class BackupManager:
     @staticmethod
     def _safe_member(name: str) -> bool:
         path = PurePosixPath(name)
-        return bool(name) and not path.is_absolute() and ".." not in path.parts
+        if not name or path.is_absolute() or ".." in path.parts:
+            return False
+        if path.parts == ("protected-secrets.json",):
+            return True
+        return len(path.parts) >= 2 and path.parts[0] == "runtime"
 
 
 class SessionRecovery:
