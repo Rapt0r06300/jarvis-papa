@@ -111,7 +111,7 @@ def test_p2_02_taxonomy_is_typed_versioned_and_contains_critical_classes() -> No
         _mail(
             "<important@example.com>",
             subject="Contrat important",
-            body="Merci de regarder ce point.",
+            body="Information importante concernant votre contrat.",
         )
     )
     assert isinstance(uncertain.intent, EmailIntent)
