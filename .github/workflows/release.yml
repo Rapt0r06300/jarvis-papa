@@ -1,0 +1,108 @@
+name: Release Jarvis Papa
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish-signed-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact release commit
+        uses: actions/checkout@v4
+
+      - name: Resolve project version
+        id: version
+        shell: bash
+        run: |
+          version=$(python - <<'PY'
+          import re
+          from pathlib import Path
+          text = Path("src/jarvis_papa/__init__.py").read_text(encoding="utf-8")
+          match = re.search(r'__version__\s*=\s*"([^"]+)"', text)
+          if not match:
+              raise SystemExit("Jarvis version not found")
+          print(match.group(1))
+          PY
+          )
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Find successful Windows build for this exact commit
+        id: build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          run_id=$(gh api \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/$REPO/actions/workflows/windows-exe.yml/runs?head_sha=$SHA&status=success&per_page=10" \
+            --jq '.workflow_runs[0].id // empty')
+          if [ -z "$run_id" ]; then
+            echo "No successful Windows EXE run exists for commit $SHA" >&2
+            exit 1
+          fi
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+
+      - name: Download exact Windows artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.value }}
+          RUN_ID: ${{ steps.build.outputs.run_id }}
+        shell: bash
+        run: |
+          mkdir -p release-input
+          gh run download "$RUN_ID" \
+            --repo "${{ github.repository }}" \
+            --name "JarvisPapa-Setup-$VERSION" \
+            --dir release-input
+
+      - name: Enforce Authenticode release contract
+        shell: bash
+        run: |
+          test -f release-input/JarvisPapa-Setup.exe
+          test -f release-input/JarvisPapa-Setup.exe.sha256
+          test -f release-input/signing-status.txt
+          headline=$(head -n 1 release-input/signing-status.txt | tr -d '\r\n')
+          if [ "$headline" != "SIGNED" ]; then
+            echo "Release blocked: Windows artifact is not Authenticode signed ($headline)" >&2
+            exit 1
+          fi
+          expected=$(awk '{print $1}' release-input/JarvisPapa-Setup.exe.sha256 | tr 'A-F' 'a-f')
+          actual=$(sha256sum release-input/JarvisPapa-Setup.exe | awk '{print $1}')
+          if [ "$expected" != "$actual" ]; then
+            echo "Release blocked: installer SHA-256 mismatch" >&2
+            exit 1
+          fi
+
+      - name: Refuse duplicate release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.value }}
+        shell: bash
+        run: |
+          if gh release view "v$VERSION" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "Release v$VERSION already exists; refusing to overwrite it." >&2
+            exit 1
+          fi
+
+      - name: Publish immutable GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.value }}
+        shell: bash
+        run: |
+          gh release create "v$VERSION" \
+            release-input/JarvisPapa-Setup.exe \
+            release-input/JarvisPapa-Setup.exe.sha256 \
+            release-input/deliverables.sha256 \
+            release-input/signing-status.txt \
+            --repo "${{ github.repository }}" \
+            --target "${{ github.sha }}" \
+            --title "Jarvis Papa $VERSION" \
+            --generate-notes
