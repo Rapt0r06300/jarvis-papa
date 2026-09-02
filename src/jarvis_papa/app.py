@@ -17,6 +17,7 @@ from jarvis_papa.dashboard_secure import dashboard_html as secure_dashboard_html
 from jarvis_papa.diagnostics import diagnostics
 from jarvis_papa.intelligence_routes import router as intelligence_router
 from jarvis_papa.mail_intelligence import intelligent_mail_assistant
+from jarvis_papa.maintenance_routes import router as maintenance_router
 from jarvis_papa.memory_center_routes import router as memory_center_router
 from jarvis_papa.memory_semantic import semantic_memory_store
 from jarvis_papa.speech import SpeechEvent, speech_coordinator
@@ -37,6 +38,7 @@ app.include_router(browser_workflow_router)
 app.include_router(thunderbird_probe_router)
 app.include_router(intelligence_router)
 app.include_router(memory_center_router)
+app.include_router(maintenance_router)
 voice_service.prewarm_async()
 
 
