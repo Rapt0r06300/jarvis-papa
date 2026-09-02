@@ -24,7 +24,7 @@ class SituationStore:
     rollback safe: no existing 0.7.0 state is overwritten or reinterpreted.
     """
 
-    SCHEMA_VERSION = 2
+    SCHEMA_VERSION = 3
 
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or (settings.runtime_dir / "situations.sqlite3")
@@ -43,6 +43,7 @@ class SituationStore:
             "rollback_policy": "older_build_ignores_separate_situation_database",
             "idempotent_migrations": True,
             "checkpoint_lanes": ("live", "backfill"),
+            "crash_replay": "unprocessed_events_are_replayed_until_marked_processed",
         }
 
     def ingest_event(self, event: NormalizedEvent) -> bool:
@@ -52,8 +53,9 @@ class SituationStore:
                 """
                 INSERT OR IGNORE INTO events(
                     identity_key, source, source_event_id, event_type,
-                    occurred_at, observed_at, payload_json, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    occurred_at, observed_at, payload_json, created_at,
+                    processed_at, processing_error
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, '')
                 """,
                 (
                     event.identity_key,
@@ -67,6 +69,28 @@ class SituationStore:
                 ),
             )
         return bool(cursor.rowcount)
+
+    def event_processed(self, identity_key: str) -> bool:
+        with sqlite3.connect(self.path, timeout=5) as connection:
+            row = connection.execute(
+                "SELECT processed_at FROM events WHERE identity_key=? LIMIT 1",
+                (identity_key,),
+            ).fetchone()
+        return bool(row and row[0] is not None)
+
+    def mark_event_processed(self, identity_key: str) -> None:
+        with sqlite3.connect(self.path, timeout=5) as connection:
+            connection.execute(
+                "UPDATE events SET processed_at=?, processing_error='' WHERE identity_key=?",
+                (time.time(), identity_key),
+            )
+
+    def mark_event_error(self, identity_key: str, error: str) -> None:
+        with sqlite3.connect(self.path, timeout=5) as connection:
+            connection.execute(
+                "UPDATE events SET processed_at=NULL, processing_error=? WHERE identity_key=?",
+                (" ".join(error.split()).strip()[:1000], identity_key),
+            )
 
     def get_event(self, identity_key: str) -> NormalizedEvent | None:
         with sqlite3.connect(self.path, timeout=5) as connection:
@@ -198,11 +222,7 @@ class SituationStore:
     def list_situations(self, *, limit: int = 100) -> list[Situation]:
         with sqlite3.connect(self.path, timeout=5) as connection:
             rows = connection.execute(
-                """
-                SELECT payload_json FROM situations
-                ORDER BY updated_at DESC
-                LIMIT ?
-                """,
+                "SELECT payload_json FROM situations ORDER BY updated_at DESC LIMIT ?",
                 (max(1, min(int(limit), 500)),),
             ).fetchall()
         output: list[Situation] = []
@@ -389,13 +409,12 @@ class SituationStore:
             if current > self.SCHEMA_VERSION:
                 raise RuntimeError("situation database is newer than this Jarvis build")
             if current == 0:
-                self._create_schema_v2(connection)
-                self._record_migration(connection, 1)
-                self._record_migration(connection, 2)
-                connection.execute("PRAGMA user_version=2")
-                current = 2
+                self._create_schema_v3(connection)
+                for version in range(1, self.SCHEMA_VERSION + 1):
+                    self._record_migration(connection, version)
+                connection.execute(f"PRAGMA user_version={self.SCHEMA_VERSION}")
+                return
             if current == 1:
-                connection.execute("BEGIN IMMEDIATE")
                 connection.executescript(
                     """
                     ALTER TABLE checkpoints RENAME TO checkpoints_v1;
@@ -418,9 +437,17 @@ class SituationStore:
                 )
                 self._record_migration(connection, 2)
                 connection.execute("PRAGMA user_version=2")
+                current = 2
+            if current == 2:
+                connection.execute("ALTER TABLE events ADD COLUMN processed_at REAL")
+                connection.execute(
+                    "ALTER TABLE events ADD COLUMN processing_error TEXT NOT NULL DEFAULT ''"
+                )
+                self._record_migration(connection, 3)
+                connection.execute("PRAGMA user_version=3")
 
     @staticmethod
-    def _create_schema_v2(connection: sqlite3.Connection) -> None:
+    def _create_schema_v3(connection: sqlite3.Connection) -> None:
         connection.executescript(
             """
             CREATE TABLE IF NOT EXISTS migration_history(
@@ -435,7 +462,9 @@ class SituationStore:
                 occurred_at REAL NOT NULL,
                 observed_at REAL NOT NULL,
                 payload_json TEXT NOT NULL,
-                created_at REAL NOT NULL
+                created_at REAL NOT NULL,
+                processed_at REAL,
+                processing_error TEXT NOT NULL DEFAULT ''
             );
             CREATE INDEX IF NOT EXISTS events_source_observed
                 ON events(source, observed_at DESC);
