@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-import jarvis_papa.email_runtime as email_runtime
+from jarvis_papa import email_runtime
 from jarvis_papa.email_intelligence import (
     EMAIL_MEANING_SCHEMA_VERSION,
     EMAIL_TAXONOMY_VERSION,
