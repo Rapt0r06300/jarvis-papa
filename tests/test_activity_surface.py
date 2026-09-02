@@ -208,14 +208,14 @@ def test_p3_18_canonical_desktop_exposes_runtime_activity_surface() -> None:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     from PySide6.QtWidgets import QApplication
 
-    from jarvis_papa.professional_desktop import ProfessionalMainWindow
+    from jarvis_papa.activity_desktop import JarvisActivityWindow
     from jarvis_papa.professional_desktop_plus import JarvisProfessionalWindow
 
     app = QApplication.instance() or QApplication([])
-    window = ProfessionalMainWindow()
+    window = JarvisActivityWindow()
     window._say = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
     try:
-        assert issubclass(JarvisProfessionalWindow, ProfessionalMainWindow)
+        assert issubclass(JarvisActivityWindow, JarvisProfessionalWindow)
         assert window.runtime_activity_heading.text() == "Ce que Jarvis fait"
         window.consume_runtime_progress(
             _event(
