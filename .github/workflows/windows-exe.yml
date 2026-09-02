@@ -11,11 +11,12 @@ on:
       - "thunderbird-extension/**"
       - "pyproject.toml"
       - ".env.example"
+      - ".gitattributes"
       - ".github/workflows/windows-exe.yml"
       - ".github/workflows/release.yml"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build-windows-exe:
@@ -37,11 +38,11 @@ jobs:
       - name: Generate Windows icon
         run: python packaging/generate_icon.py
 
-      - name: Build native Jarvis Papa desktop application
+      - name: Build native Jarvis desktop application
         shell: pwsh
         run: |
           pyinstaller --noconfirm --clean --onedir --windowed `
-            --name JarvisPapa `
+            --name Jarvis `
             --icon packaging/jarvis.ico `
             --version-file packaging/version_info.txt `
             --paths src `
@@ -96,7 +97,7 @@ jobs:
           if (-not $signtool) { throw "signtool.exe x64 was not found on the Windows runner" }
 
           $targets = @(
-            "dist\JarvisPapa\JarvisPapa.exe",
+            "dist\Jarvis\Jarvis.exe",
             "dist\JarvisNativeHost.exe",
             "dist\JarvisDiagnostic.exe"
           )
@@ -123,22 +124,22 @@ jobs:
             if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force }
           }
 
-      - name: Smoke test packaged JarvisPapa.exe
+      - name: Smoke test packaged Jarvis.exe
         shell: pwsh
         env:
           QT_QPA_PLATFORM: offscreen
           JARVIS_SKIP_ONBOARDING: "1"
         run: |
-          $qwenWorker = "dist\JarvisPapa\_internal\jarvis_papa\voice\qwen_worker.py"
-          if (-not (Test-Path $qwenWorker)) { throw "Qwen worker is missing from Jarvis Papa bundle" }
-          $version = (Get-Item "dist\JarvisPapa\JarvisPapa.exe").VersionInfo.ProductVersion
-          if (-not $version.StartsWith("0.7.0")) { throw "JarvisPapa.exe metadata version is invalid: $version" }
-          $process = Start-Process -FilePath "dist\JarvisPapa\JarvisPapa.exe" -PassThru
+          $qwenWorker = "dist\Jarvis\_internal\jarvis_papa\voice\qwen_worker.py"
+          if (-not (Test-Path $qwenWorker)) { throw "Qwen worker is missing from Jarvis bundle" }
+          $version = (Get-Item "dist\Jarvis\Jarvis.exe").VersionInfo.ProductVersion
+          if (-not $version.StartsWith("0.7.0")) { throw "Jarvis.exe metadata version is invalid: $version" }
+          $process = Start-Process -FilePath "dist\Jarvis\Jarvis.exe" -PassThru
           $healthy = $false
           try {
             for ($i = 0; $i -lt 60; $i++) {
               if ($process.HasExited) {
-                throw "JarvisPapa.exe exited unexpectedly with code $($process.ExitCode)"
+                throw "Jarvis.exe exited unexpectedly with code $($process.ExitCode)"
               }
               try {
                 $health = Invoke-RestMethod -Uri "http://127.0.0.1:8765/health" -TimeoutSec 1
@@ -168,7 +169,7 @@ jobs:
                 Start-Sleep -Milliseconds 500
               }
             }
-            if (-not $healthy) { throw "JarvisPapa.exe did not expose its local service in time" }
+            if (-not $healthy) { throw "Jarvis.exe did not expose its local service in time" }
           } finally {
             if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force }
           }
@@ -201,7 +202,7 @@ jobs:
         shell: pwsh
         run: choco install innosetup --no-progress -y
 
-      - name: Build JarvisPapa-Setup.exe
+      - name: Build Jarvis-Setup.exe
         shell: pwsh
         run: |
           $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
@@ -230,7 +231,7 @@ jobs:
           & $signtool.FullName sign /fd SHA256 /td SHA256 `
             /tr "http://timestamp.digicert.com" `
             /f $pfx /p $env:WINDOWS_SIGNING_PASSWORD `
-            "installer-output\JarvisPapa-Setup.exe"
+            "installer-output\Jarvis-Setup.exe"
           if ($LASTEXITCODE -ne 0) { throw "Authenticode signing failed for installer" }
           Remove-Item $pfx -Force -ErrorAction SilentlyContinue
           "status=SIGNED" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
@@ -241,9 +242,9 @@ jobs:
           QT_QPA_PLATFORM: offscreen
           JARVIS_SKIP_ONBOARDING: "1"
         run: |
-          $setup = (Resolve-Path "installer-output\JarvisPapa-Setup.exe").Path
+          $setup = (Resolve-Path "installer-output\Jarvis-Setup.exe").Path
           $setupHash = (Get-FileHash $setup -Algorithm SHA256).Hash
-          $installDir = Join-Path $env:RUNNER_TEMP "JarvisPapaInstalled"
+          $installDir = Join-Path $env:RUNNER_TEMP "JarvisInstalled"
           $dataDir = Join-Path $env:LOCALAPPDATA "JarvisPapa"
           $legacyEnv = Join-Path $dataDir ".env"
           $startupKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
@@ -255,8 +256,8 @@ jobs:
               "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/DIR=$installDir"
             ) -Wait -PassThru
             if ($installer.ExitCode -ne 0) { throw "Installer failed with code $($installer.ExitCode)" }
-            $installedExe = Join-Path $installDir "JarvisPapa.exe"
-            if (-not (Test-Path $installedExe)) { throw "Installed JarvisPapa.exe is missing" }
+            $installedExe = Join-Path $installDir "Jarvis.exe"
+            if (-not (Test-Path $installedExe)) { throw "Installed Jarvis.exe is missing" }
             $installedQwenWorker = Join-Path $installDir "_internal\jarvis_papa\voice\qwen_worker.py"
             if (-not (Test-Path $installedQwenWorker)) { throw "Installed Qwen worker is missing" }
             if (Test-Path $legacyEnv) { throw "Fresh install recreated legacy plaintext .env" }
@@ -278,7 +279,7 @@ jobs:
             $healthy = $false
             try {
               for ($i = 0; $i -lt 60; $i++) {
-                if ($process.HasExited) { throw "Installed JarvisPapa.exe exited unexpectedly" }
+                if ($process.HasExited) { throw "Installed Jarvis.exe exited unexpectedly" }
                 try {
                   $health = Invoke-RestMethod -Uri "http://127.0.0.1:8765/health" -TimeoutSec 1
                   if ($health.status -eq "ok") {
@@ -303,7 +304,7 @@ jobs:
                   Start-Sleep -Milliseconds 500
                 }
               }
-              if (-not $healthy) { throw "Installed JarvisPapa.exe never became healthy" }
+              if (-not $healthy) { throw "Installed Jarvis.exe never became healthy" }
             } finally {
               if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force }
             }
@@ -317,8 +318,8 @@ jobs:
             ) -Wait -PassThru
             if ($uninstall.ExitCode -ne 0) { throw "Uninstaller failed with code $($uninstall.ExitCode)" }
             Start-Sleep -Seconds 1
-            if (Test-Path (Join-Path $installDir "JarvisPapa.exe")) {
-              throw "JarvisPapa.exe remained after uninstall"
+            if (Test-Path (Join-Path $installDir "Jarvis.exe")) {
+              throw "Jarvis.exe remained after uninstall"
             }
             $startupProperty = Get-ItemProperty -Path $startupKey -Name "Jarvis Papa" -ErrorAction SilentlyContinue
             if ($null -ne $startupProperty) { throw "Autostart registry entry remained after uninstall" }
@@ -342,10 +343,10 @@ jobs:
         shell: pwsh
         run: |
           $files = @(
-            "dist\JarvisPapa\JarvisPapa.exe",
+            "dist\Jarvis\Jarvis.exe",
             "dist\JarvisNativeHost.exe",
             "dist\JarvisDiagnostic.exe",
-            "installer-output\JarvisPapa-Setup.exe"
+            "installer-output\Jarvis-Setup.exe"
           )
           $signingExpected = "${{ steps.sign_apps.outputs.status }}" -eq "SIGNED"
           $statusLines = @()
@@ -373,19 +374,50 @@ jobs:
             $manifest += "$hash  $file"
           }
           $manifest | Set-Content "installer-output\deliverables.sha256" -Encoding ascii
-          $setupHash = (Get-FileHash "installer-output\JarvisPapa-Setup.exe" -Algorithm SHA256).Hash.ToLowerInvariant()
-          "$setupHash  JarvisPapa-Setup.exe" |
-            Set-Content "installer-output\JarvisPapa-Setup.exe.sha256" -Encoding ascii
+          $setupHash = (Get-FileHash "installer-output\Jarvis-Setup.exe" -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$setupHash  Jarvis-Setup.exe" |
+            Set-Content "installer-output\Jarvis-Setup.exe.sha256" -Encoding ascii
           Write-Host "Installer SHA256 $setupHash"
 
-      - name: Upload final Windows installer
+      - name: Publish installer into main with Git LFS
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        shell: pwsh
+        run: |
+          git lfs install --local
+          New-Item -ItemType Directory -Path installer -Force | Out-Null
+          Copy-Item "installer-output\Jarvis-Setup.exe" "installer\Jarvis-Setup.exe" -Force
+          Copy-Item "installer-output\Jarvis-Setup.exe.sha256" "installer\Jarvis-Setup.exe.sha256" -Force
+          Copy-Item "installer-output\deliverables.sha256" "installer\deliverables.sha256" -Force
+          Copy-Item "installer-output\signing-status.txt" "installer\signing-status.txt" -Force
+          git add .gitattributes installer/Jarvis-Setup.exe installer/Jarvis-Setup.exe.sha256 installer/deliverables.sha256 installer/signing-status.txt
+          if (-not (git status --porcelain)) {
+            Write-Host "Repository installer is already current."
+            exit 0
+          }
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "build: publish Jarvis 0.7.0 installer [skip ci]"
+          git push origin HEAD:main
+
+      - name: Upload final Windows installer artifact
         uses: actions/upload-artifact@v4
         with:
-          name: JarvisPapa-Setup-0.7.0
+          name: Jarvis-Setup-0.7.0
           path: |
-            installer-output/JarvisPapa-Setup.exe
-            installer-output/JarvisPapa-Setup.exe.sha256
+            installer-output/Jarvis-Setup.exe
+            installer-output/Jarvis-Setup.exe.sha256
             installer-output/deliverables.sha256
             installer-output/signing-status.txt
           if-no-files-found: error
           retention-days: 30
+
+      - name: Remove temporary closure branch after successful main build
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          gh api --method DELETE "repos/${{ github.repository }}/git/refs/heads/closure/grand-run-20260902" 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "Temporary branch is already absent or could not be deleted; main remains authoritative."
+          }
