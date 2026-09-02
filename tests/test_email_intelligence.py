@@ -110,7 +110,7 @@ def test_p2_02_taxonomy_is_typed_versioned_and_contains_critical_classes() -> No
     uncertain = email_intelligence.triage(
         _mail(
             "<important@example.com>",
-            subject="Dossier important",
+            subject="Contrat important",
             body="Merci de regarder ce point.",
         )
     )
@@ -207,12 +207,14 @@ def test_p2_05_reply_chain_and_duplicate_resend_share_one_durable_thread() -> No
     assert reply_id.confidence >= 0.9
 
 
-def test_p2_05_subject_only_fallback_is_explicitly_low_confidence() -> None:
-    # A synthetic source can provide a stable generated Message-ID. A true standards link
-    # is still preferred; this test documents that the only fuzzy path carries low confidence.
+def test_p2_05_subject_fallback_is_explicitly_low_confidence() -> None:
     first = _mail("generated-a", subject="Même sujet", sender="A <a@example.com>")
     second = _mail("generated-b", subject="Re: Même sujet", sender="A <a@example.com>")
-    assert derive_thread_identity(first).key != derive_thread_identity(second).key
+    first_id = derive_thread_identity(first)
+    second_id = derive_thread_identity(second)
+    assert first_id.key == second_id.key
+    assert first_id.confidence == second_id.confidence == 0.45
+    assert first_id.method == "conservative_subject_domain_fallback"
 
 
 def test_p2_06_thread_state_question_reply_thanks_has_no_open_reply_obligation() -> None:
