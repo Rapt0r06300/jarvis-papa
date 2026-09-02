@@ -8,7 +8,11 @@ from enum import StrEnum
 from typing import ClassVar, Protocol
 
 from jarvis_papa.governance import ActionContract, PolicyResult, RiskLevel, policy_kernel
-from jarvis_papa.situation_assurance import overdue_follow_ups, reconcile_expected_events
+from jarvis_papa.situation_assurance import (
+    overdue_follow_ups,
+    reconcile_expected_events,
+    strong_correlation_keys,
+)
 from jarvis_papa.situation_store import SituationStore, situation_store
 from jarvis_papa.situations import (
     EntityRef,
@@ -21,7 +25,6 @@ from jarvis_papa.situations import (
     SourceConnectionState,
     SourceHealth,
     SourceSyncResult,
-    correlation_keys,
     score_priority,
     stable_evidence_hash,
 )
@@ -105,7 +108,7 @@ class CancellationToken:
 
 
 class SourceAdapter(Protocol):
-    """Read-only source contract; mutation deliberately lives elsewhere."""
+    """Read-only source contract. External mutation deliberately lives elsewhere."""
 
     source_name: str
 
@@ -170,7 +173,7 @@ def _no_proposals(situation: Situation) -> tuple[SituationProposal, ...]:
 
 
 class SituationOrchestrator:
-    """Incremental INGEST→...→PROPOSE pipeline with bounded failure domains."""
+    """Incremental INGEST→NORMALIZE→CLASSIFY→EXTRACT→CORRELATE→SCORE→PROPOSE."""
 
     def __init__(
         self,
@@ -237,8 +240,8 @@ class SituationOrchestrator:
                 errors.append(f"{source}: sync {type(exc).__name__}")
                 continue
 
-            batch_evidence: list[str] = []
             source_failed = False
+            batch_evidence: list[str] = []
             for event in batch.events:
                 if token.cancelled:
                     break
@@ -251,14 +254,13 @@ class SituationOrchestrator:
                 try:
                     emit(PipelineStage.CLASSIFY, source, event.event_type)
                     domain = self.classifier(event)
-
                     emit(PipelineStage.EXTRACT, source, "Extraction des entités.")
                     entities = self.extractor(event)
                     for entity in entities:
                         self.store.save_entity(entity)
 
                     emit(PipelineStage.CORRELATE, source, "Corrélation des preuves.")
-                    keys = correlation_keys(event, entities=entities)
+                    keys = strong_correlation_keys(event, entities=list(entities))
                     situation = self.store.find_situation_by_keys(keys)
                     if situation is None:
                         situation = Situation.create(
@@ -343,7 +345,7 @@ class SituationOrchestrator:
 
 
 class SituationGovernanceBridge:
-    """Bridge to existing policy and transaction systems, never an executor."""
+    """Bridge to existing policy/transaction systems; it is deliberately not an executor."""
 
     _RISK: ClassVar[dict[str, RiskLevel]] = {
         "safe": RiskLevel.SAFE,
