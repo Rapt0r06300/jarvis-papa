@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from jarvis_papa.config import settings
@@ -19,9 +21,9 @@ from jarvis_papa.situations import (
 class SituationStore:
     """Versioned local store for Robert Autopilot events and situations.
 
-    The database lives under runtime so the existing BackupManager includes it
-    automatically. Older Jarvis builds ignore this separate file, which makes
-    rollback safe: no existing 0.7.0 state is overwritten or reinterpreted.
+    Connections are deliberately short-lived. This matters on Windows where an
+    open SQLite connection keeps the database file locked and would otherwise
+    make backup/restore or atomic replacement unreliable.
     """
 
     SCHEMA_VERSION = 3
@@ -31,8 +33,21 @@ class SituationStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._migrate()
 
+    @contextmanager
+    def _connection(self) -> Iterator[sqlite3.Connection]:
+        connection = sqlite3.connect(self.path, timeout=5)
+        try:
+            connection.execute("PRAGMA foreign_keys=ON")
+            yield connection
+            if connection.in_transaction:
+                connection.commit()
+        finally:
+            if connection.in_transaction:
+                connection.rollback()
+            connection.close()
+
     def schema_version(self) -> int:
-        with sqlite3.connect(self.path, timeout=5) as connection:
+        with self._connection() as connection:
             return int(connection.execute("PRAGMA user_version").fetchone()[0])
 
     def migration_info(self) -> dict[str, object]:
@@ -44,11 +59,12 @@ class SituationStore:
             "idempotent_migrations": True,
             "checkpoint_lanes": ("live", "backfill"),
             "crash_replay": "unprocessed_events_are_replayed_until_marked_processed",
+            "connection_policy": "short_lived_explicit_close",
         }
 
     def ingest_event(self, event: NormalizedEvent) -> bool:
         payload = json.dumps(event.to_dict(), ensure_ascii=False, sort_keys=True)
-        with sqlite3.connect(self.path, timeout=5) as connection:
+        with self._connection() as connection:
             cursor = connection.execute(
                 """
                 INSERT OR IGNORE INTO events(
@@ -68,10 +84,11 @@ class SituationStore:
                     time.time(),
                 ),
             )
-        return bool(cursor.rowcount)
+            inserted = bool(cursor.rowcount)
+        return inserted
 
     def event_processed(self, identity_key: str) -> bool:
-        with sqlite3.connect(self.path, timeout=5) as connection:
+        with self._connection() as connection:
             row = connection.execute(
                 "SELECT processed_at FROM events WHERE identity_key=? LIMIT 1",
                 (identity_key,),
@@ -79,21 +96,21 @@ class SituationStore:
         return bool(row and row[0] is not None)
 
     def mark_event_processed(self, identity_key: str) -> None:
-        with sqlite3.connect(self.path, timeout=5) as connection:
+        with self._connection() as connection:
             connection.execute(
                 "UPDATE events SET processed_at=?, processing_error='' WHERE identity_key=?",
                 (time.time(), identity_key),
             )
 
     def mark_event_error(self, identity_key: str, error: str) -> None:
-        with sqlite3.connect(self.path, timeout=5) as connection:
+        with self._connection() as connection:
             connection.execute(
                 "UPDATE events SET processed_at=NULL, processing_error=? WHERE identity_key=?",
                 (" ".join(error.split()).strip()[:1000], identity_key),
             )
 
     def get_event(self, identity_key: str) -> NormalizedEvent | None:
-        with sqlite3.connect(self.path, timeout=5) as connection:
+        with self._connection() as connection:
             row = connection.execute(
                 "SELECT payload_json FROM events WHERE identity_key=? LIMIT 1",
                 (identity_key,),
@@ -108,7 +125,7 @@ class SituationStore:
 
     def save_entity(self, entity: EntityRef) -> None:
         payload = json.dumps(entity.to_dict(), ensure_ascii=False, sort_keys=True)
-        with sqlite3.connect(self.path, timeout=5) as connection:
+        with self._connection() as connection:
             connection.execute(
                 """
                 INSERT INTO entities(entity_id, kind, payload_json, updated_at)
@@ -122,7 +139,7 @@ class SituationStore:
             )
 
     def get_entity(self, entity_id: str) -> EntityRef | None:
-        with sqlite3.connect(self.path, timeout=5) as connection:
+        with self._connection() as connection:
             row = connection.execute(
                 "SELECT payload_json FROM entities WHERE entity_id=? LIMIT 1",
                 (entity_id,),
@@ -143,8 +160,7 @@ class SituationStore:
     ) -> None:
         payload = json.dumps(situation.to_dict(), ensure_ascii=False, sort_keys=True)
         now = time.time()
-        with sqlite3.connect(self.path, timeout=5) as connection:
-            connection.execute("PRAGMA foreign_keys=ON")
+        with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             connection.execute(
                 """
@@ -194,7 +210,7 @@ class SituationStore:
                 )
 
     def get_situation(self, situation_id: str) -> Situation | None:
-        with sqlite3.connect(self.path, timeout=5) as connection:
+        with self._connection() as connection:
             row = connection.execute(
                 "SELECT payload_json FROM situations WHERE situation_id=? LIMIT 1",
                 (situation_id,),
@@ -202,7 +218,7 @@ class SituationStore:
         return self._situation_from_row(row)
 
     def find_situation_by_keys(self, keys: tuple[str, ...] | list[str]) -> Situation | None:
-        with sqlite3.connect(self.path, timeout=5) as connection:
+        with self._connection() as connection:
             for key in keys:
                 row = connection.execute(
                     """
@@ -220,7 +236,7 @@ class SituationStore:
         return None
 
     def list_situations(self, *, limit: int = 100) -> list[Situation]:
-        with sqlite3.connect(self.path, timeout=5) as connection:
+        with self._connection() as connection:
             rows = connection.execute(
                 "SELECT payload_json FROM situations ORDER BY updated_at DESC LIMIT ?",
                 (max(1, min(int(limit), 500)),),
@@ -245,7 +261,7 @@ class SituationStore:
         clean_lane = " ".join(lane.casefold().split()).strip()[:40]
         if not clean_source or clean_lane not in {"live", "backfill"}:
             raise ValueError("checkpoint requires source and a live/backfill lane")
-        with sqlite3.connect(self.path, timeout=5) as connection:
+        with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             connection.execute(
                 """
@@ -273,7 +289,7 @@ class SituationStore:
         clean_lane = " ".join(lane.casefold().split()).strip()[:40]
         if clean_lane not in {"live", "backfill"}:
             raise ValueError("checkpoint lane must be live or backfill")
-        with sqlite3.connect(self.path, timeout=5) as connection:
+        with self._connection() as connection:
             connection.row_factory = sqlite3.Row
             row = connection.execute(
                 """
@@ -337,7 +353,7 @@ class SituationStore:
                 )
             )
 
-        with sqlite3.connect(self.path, timeout=5) as connection:
+        with self._connection() as connection:
             rows = connection.execute(
                 "SELECT entity_id, payload_json FROM entities ORDER BY updated_at DESC LIMIT 500"
             ).fetchall()
@@ -369,7 +385,7 @@ class SituationStore:
         return results[: max(1, min(int(limit), 50))]
 
     def stats(self) -> dict[str, int]:
-        with sqlite3.connect(self.path, timeout=5) as connection:
+        with self._connection() as connection:
             return {
                 "schema_version": int(connection.execute("PRAGMA user_version").fetchone()[0]),
                 "events": int(connection.execute("SELECT COUNT(*) FROM events").fetchone()[0]),
@@ -388,7 +404,7 @@ class SituationStore:
         return round(matches / len(tokens) + (0.25 if exact else 0.0), 4)
 
     @staticmethod
-    def _situation_from_row(row: tuple[object, ...] | None) -> Situation | None:
+    def _situation_from_row(row: tuple[object, ...] | sqlite3.Row | None) -> Situation | None:
         if not row:
             return None
         try:
@@ -403,8 +419,7 @@ class SituationStore:
             return None
 
     def _migrate(self) -> None:
-        with sqlite3.connect(self.path, timeout=5) as connection:
-            connection.execute("PRAGMA foreign_keys=ON")
+        with self._connection() as connection:
             current = int(connection.execute("PRAGMA user_version").fetchone()[0])
             if current > self.SCHEMA_VERSION:
                 raise RuntimeError("situation database is newer than this Jarvis build")
@@ -415,36 +430,46 @@ class SituationStore:
                 connection.execute(f"PRAGMA user_version={self.SCHEMA_VERSION}")
                 return
             if current == 1:
-                connection.executescript(
-                    """
-                    ALTER TABLE checkpoints RENAME TO checkpoints_v1;
-                    CREATE TABLE checkpoints(
-                        source TEXT NOT NULL,
-                        lane TEXT NOT NULL DEFAULT 'live',
-                        cursor TEXT NOT NULL,
-                        source_version TEXT NOT NULL,
-                        evidence_hash TEXT NOT NULL,
-                        updated_at REAL NOT NULL,
-                        PRIMARY KEY(source, lane)
-                    );
-                    INSERT INTO checkpoints(
-                        source, lane, cursor, source_version, evidence_hash, updated_at
+                columns = self._column_names(connection, "checkpoints")
+                if "lane" not in columns:
+                    connection.executescript(
+                        """
+                        ALTER TABLE checkpoints RENAME TO checkpoints_v1;
+                        CREATE TABLE checkpoints(
+                            source TEXT NOT NULL,
+                            lane TEXT NOT NULL DEFAULT 'live',
+                            cursor TEXT NOT NULL,
+                            source_version TEXT NOT NULL,
+                            evidence_hash TEXT NOT NULL,
+                            updated_at REAL NOT NULL,
+                            PRIMARY KEY(source, lane)
+                        );
+                        INSERT INTO checkpoints(
+                            source, lane, cursor, source_version, evidence_hash, updated_at
+                        )
+                        SELECT source, 'live', cursor, source_version, evidence_hash, updated_at
+                        FROM checkpoints_v1;
+                        DROP TABLE checkpoints_v1;
+                        """
                     )
-                    SELECT source, 'live', cursor, source_version, evidence_hash, updated_at
-                    FROM checkpoints_v1;
-                    DROP TABLE checkpoints_v1;
-                    """
-                )
                 self._record_migration(connection, 2)
                 connection.execute("PRAGMA user_version=2")
                 current = 2
             if current == 2:
-                connection.execute("ALTER TABLE events ADD COLUMN processed_at REAL")
-                connection.execute(
-                    "ALTER TABLE events ADD COLUMN processing_error TEXT NOT NULL DEFAULT ''"
-                )
+                event_columns = self._column_names(connection, "events")
+                if "processed_at" not in event_columns:
+                    connection.execute("ALTER TABLE events ADD COLUMN processed_at REAL")
+                if "processing_error" not in event_columns:
+                    connection.execute(
+                        "ALTER TABLE events ADD COLUMN processing_error TEXT NOT NULL DEFAULT ''"
+                    )
                 self._record_migration(connection, 3)
                 connection.execute("PRAGMA user_version=3")
+            self._create_schema_v3(connection)
+
+    @staticmethod
+    def _column_names(connection: sqlite3.Connection, table: str) -> set[str]:
+        return {str(row[1]) for row in connection.execute(f"PRAGMA table_info({table})").fetchall()}
 
     @staticmethod
     def _create_schema_v3(connection: sqlite3.Connection) -> None:
