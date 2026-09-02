@@ -1,10 +1,9 @@
 # Jarvis Papa 0.7.0 — roadmap canonique de clôture
 
 Date de référence : 2026-09-02  
-Branche de clôture : `closure/grand-run-20260902`  
-Base : `main@3a4e5bca60d9cc5062e727d13b6a7b11b22326b0`
+Branche canonique : `main`
 
-Ce fichier est la source de vérité pour la clôture 0.7.0. L'ancien document d'architecture reste utile comme conception historique, mais ses cases ne doivent plus être utilisées pour déduire l'état réel du produit.
+Ce fichier est la source de vérité pour la clôture 0.7.0. Aucun développement permanent ne doit rester sur une branche parallèle : `main` est l'unique branche de travail et de livraison.
 
 ## Règle de statut
 
@@ -12,41 +11,51 @@ Ce fichier est la source de vérité pour la clôture 0.7.0. L'ancien document d
 - **IMPLEMENTED / PROOF BLOCKED** : code et tests/gates ajoutés, mais la preuve automatique ne peut pas actuellement démarrer à cause d'une dépendance externe.
 - **EXTERNAL BLOCKER** : nécessite une ressource ou une action hors du dépôt ; il est interdit de marquer DONE sans preuve réelle.
 
+## Contrat binaire Windows
+
+- L'application installée s'appelle **`Jarvis.exe`**.
+- L'installeur final s'appelle **`Jarvis-Setup.exe`**.
+- Le gros installeur n'est pas versionné dans les sources Git.
+- La **GitHub Release `v0.7.0`** doit exposer directement `Jarvis-Setup.exe` comme binaire de téléchargement, accompagné de son SHA-256 et du statut de signature.
+- Le workflow de release ne publie qu'un installeur provenant d'un build Windows réussi du même SHA.
+
 ## État des chantiers de clôture
 
 | Chantier | État | Preuve / contrat de sortie |
 | --- | --- | --- |
-| Policy Kernel et doubles autorisations exactes | DONE | Présent sur `main` avant ce run ; chaque grant consommé repasse par le Policy Kernel. |
-| Mémoire protégée / DPAPI / mémoire sémantique | DONE | Présent sur `main` avant ce run. |
-| Onboarding natif et UI Windows canonique | DONE | Présent sur `main` avant ce run. |
-| Thunderbird + Native Messaging | DONE pour l'implémentation | Déjà présent ; validation finale du compte réel reste dans la gate PC physique. |
-| Everything/fallback + recherche documentaire | DONE | Présent sur `main` avant ce run. |
-| UI Automation Windows + Playwright | DONE | Présent sur `main` avant ce run. |
-| Updater fail-closed | IMPLEMENTED / PROOF BLOCKED | HTTPS obligatoire, SHA-256 obligatoire, Authenticode `Valid` obligatoire sous Windows, downgrade automatique refusé. CI actuellement incapable de démarrer ses steps. |
-| Rollback de version | IMPLEMENTED / PROOF BLOCKED | L'installeur courant est conservé localement ; la version précédente est conservée avant update ; rollback refuse tout installeur non signé. |
-| Autostart Windows | IMPLEMENTED / PROOF BLOCKED | HKCU `...\Run`, sans élévation admin ; installateur et interface utilisent le même contrat. Le Windows E2E vérifie création et suppression. |
-| Notifications natives | IMPLEMENTED / PROOF BLOCKED | QSystemTrayIcon relié au bus proactif ; seules les priorités `important` et `urgent` interrompent l'utilisateur. AppUserModelID `JarvisPapa.Desktop` aligné entre processus et raccourcis. |
-| Sauvegardes | IMPLEMENTED / PROOF BLOCKED | ZIP borné, données durables uniquement, chemins de restauration allowlistés, DPAPI conservé chiffré. |
-| Restauration | IMPLEMENTED / PROOF BLOCKED | Double autorisation exacte ; restauration uniquement depuis le dépôt Jarvis ; application différée avant ouverture des bases au prochain lancement. |
-| Crash recovery | IMPLEMENTED / PROOF BLOCKED | Marqueur de session ; détection d'arrêt non propre ; sauvegarde de sécurité avant reprise ; nettoyage au shutdown normal. |
-| Clean install / uninstall / reinstall E2E automatisé | IMPLEMENTED / PROOF BLOCKED | Le workflow 0.7.0 vérifie app, routes maintenance, autostart, cache rollback, hash installeur et persistance des données. GitHub Actions ne lance actuellement aucune step. |
-| Signature Authenticode | EXTERNAL BLOCKER | Le workflow sait signer, mais aucun certificat de signature réel n'est configuré. Une release non signée est interdite par la gate 0.7.0. |
-| Release GitHub 0.7.0 | EXTERNAL BLOCKER | Nouveau workflow de release : exige un build Windows réussi du même SHA, `signing-status.txt = SIGNED` et SHA-256 exact avant publication. Aucune release ne doit être créée avant ces preuves. |
+| Policy Kernel et doubles autorisations exactes | DONE | Chaque grant consommé repasse par le Policy Kernel. |
+| Mémoire protégée / DPAPI / mémoire sémantique | DONE | Présent dans l'architecture livrée. |
+| Onboarding natif et UI Windows canonique | DONE | Interface native PySide6 canonique. |
+| Thunderbird + Native Messaging | DONE pour l'implémentation | Validation finale du compte réel reste dans la gate PC physique. |
+| Everything/fallback + recherche documentaire | DONE | Recherche sûre déjà intégrée. |
+| UI Automation Windows + Playwright | DONE | Automatisation sémantique et refus des clics ambigus. |
+| Updater fail-closed | IMPLEMENTED / PROOF BLOCKED | HTTPS, SHA-256, Authenticode `Valid` sous Windows, downgrade automatique refusé. |
+| Rollback de version | IMPLEMENTED / PROOF BLOCKED | Installeur courant/précédent conservé localement ; rollback refuse tout installeur non signé. |
+| Autostart Windows | IMPLEMENTED / PROOF BLOCKED | HKCU `...\\Run`, sans élévation admin ; E2E vérifie création et suppression. |
+| Notifications natives | IMPLEMENTED / PROOF BLOCKED | QSystemTrayIcon relié au bus proactif ; interruptions limitées aux priorités importantes/urgentes. |
+| Sauvegardes | IMPLEMENTED / PROOF BLOCKED | ZIP borné, données durables seulement, secrets DPAPI conservés chiffrés. |
+| Restauration | IMPLEMENTED / PROOF BLOCKED | Double autorisation ; archive gérée par Jarvis ; application différée avant ouverture des bases. |
+| Crash recovery | IMPLEMENTED / PROOF BLOCKED | Marqueur de session, détection d'arrêt non propre et sauvegarde de sécurité. |
+| `Jarvis.exe` | IMPLEMENTED / PROOF BLOCKED | PyInstaller construit `dist\\Jarvis\\Jarvis.exe`; métadonnées Windows alignées. |
+| `Jarvis-Setup.exe` | IMPLEMENTED / PROOF BLOCKED | Inno Setup construit l'installeur qui installe `Jarvis.exe`. |
+| Clean install / uninstall / reinstall E2E | IMPLEMENTED / PROOF BLOCKED | Vérifie `Jarvis.exe`, routes maintenance, autostart, cache rollback, hash installeur et persistance des données. |
+| Signature Authenticode | EXTERNAL BLOCKER | Le workflow sait signer, mais aucun certificat de signature réel n'est actuellement prouvé/configuré. |
+| Release GitHub 0.7.0 | EXTERNAL BLOCKER | Doit publier directement `Jarvis-Setup.exe` + SHA-256 depuis le même SHA après build signé réussi. |
 | Validation PC réel de Robert | EXTERNAL BLOCKER | Exécuter `validate_final_pc.ps1` sur le PC final et obtenir les preuves Thunderbird, audio, fichiers, navigation et démarrage réel. |
 
 ## Incident GitHub Actions actuel
 
-Les runs `CI` et `Windows EXE` du HEAD `main` ont été relancés le 2026-09-02. Les jobs échouent de nouveau avant la première étape : aucun checkout, aucune installation, aucun lint et aucun test ne sont exécutés. Ce symptôme doit être traité comme un blocage de provisioning/compte GitHub Actions jusqu'à preuve contraire, pas comme un échec de code.
+Les derniers runs observés échouent avant la première étape : aucun checkout, aucune installation, aucun lint et aucun test ne sont exécutés. Ce symptôme est un blocage d'exécution GitHub Actions jusqu'à preuve contraire, pas une preuve d'échec du code.
 
 ### Gate de reprise
 
 1. rétablir l'exécution des runners GitHub Actions ;
-2. obtenir `python -m compileall -q src tests`, `ruff check .` et `pytest -q` verts sur Ubuntu et Windows ;
-3. obtenir le workflow `Windows EXE` 0.7.0 vert sur le commit exact de `main` ;
-4. configurer une identité de signature Authenticode réelle et obtenir `SIGNED` pour les EXE et l'installeur ;
-5. refaire le workflow Windows et vérifier son E2E install/uninstall/reinstall ;
+2. obtenir `ruff check .` et `pytest -q` verts ;
+3. obtenir le workflow `Windows EXE` vert sur le commit exact de `main` ;
+4. configurer une identité de signature Authenticode réelle et obtenir `SIGNED` pour `Jarvis.exe`, les exécutables auxiliaires et `Jarvis-Setup.exe` ;
+5. refaire le workflow Windows et vérifier le clean install/uninstall/reinstall ;
 6. exécuter `validate_final_pc.ps1` sur le PC final de Robert ;
-7. seulement alors déclencher `Release Jarvis Papa` et vérifier l'existence de `v0.7.0` avec son installeur et son SHA-256.
+7. déclencher `Release Jarvis Papa` et vérifier `v0.7.0` avec `Jarvis-Setup.exe` téléchargeable directement depuis la Release.
 
 ## Contrat de clôture définitive
 
@@ -55,6 +64,6 @@ La roadmap 0.7.0 est **CLOSED** uniquement lorsque les quatre preuves suivantes 
 - CI Ubuntu + Windows verte sur le SHA publié ;
 - Windows EXE + clean E2E verts avec Authenticode `Valid` ;
 - validation du PC réel de Robert sans FAIL critique ;
-- GitHub Release `v0.7.0` publiée depuis exactement le même SHA.
+- GitHub Release `v0.7.0` publiée depuis exactement le même SHA avec `Jarvis-Setup.exe`.
 
 Tant qu'une de ces preuves manque, le projet peut être fonctionnellement implémenté mais la release n'est pas déclarée terminée.
