@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import time
 from dataclasses import asdict, dataclass
 from datetime import datetime
@@ -116,7 +117,8 @@ class ActionOutcome:
         occurred_at: float | None = None,
     ) -> ActionOutcome:
         score = float(confidence)
-        if not action_id.strip() or not 0.0 <= score <= 1.0:
+        clean_action_id = action_id.strip()[:128]
+        if not clean_action_id or not 0.0 <= score <= 1.0:
             raise ValueError("outcome requires action_id and bounded confidence")
         bounded: dict[str, object] = {}
         for key, value in list((evidence or {}).items())[:30]:
@@ -125,14 +127,24 @@ class ActionOutcome:
                 bounded[name] = value
             else:
                 bounded[name] = str(value)[:1000]
-        material = f"{action_id}|{state.value}|{occurred_at or time.time_ns()}"
+        at = float(occurred_at) if occurred_at is not None else time.time()
+        evidence_fingerprint = json.dumps(
+            bounded,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        material = (
+            f"{clean_action_id}|{state.value}|{score:.12g}|"
+            f"{evidence_fingerprint}|{at:.9f}"
+        )
         return cls(
             hashlib.sha256(material.encode("utf-8")).hexdigest(),
-            action_id.strip()[:128],
+            clean_action_id,
             state,
             score,
             bounded,
-            float(occurred_at or time.time()),
+            at,
         )
 
     def __hash__(self) -> int:
