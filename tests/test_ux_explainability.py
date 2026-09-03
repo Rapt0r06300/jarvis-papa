@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -10,9 +10,24 @@ def test_p9_11_timeline_is_normalized_and_keeps_expandable_source_evidence() -> 
     from jarvis_papa.ux_explainability import TimelineEvent, build_timeline
 
     events = (
-        TimelineEvent("relay", "Disponible au relais", datetime(2026, 9, 3, 10, tzinfo=timezone.utc), "mail-relay"),
-        TimelineEvent("order", "Commande créée", datetime(2026, 9, 1, 8, tzinfo=timezone.utc), "amazon-order"),
-        TimelineEvent("shipment", "Expédiée", datetime(2026, 9, 2, 9, tzinfo=timezone.utc), "carrier-event"),
+        TimelineEvent(
+            "relay",
+            "Disponible au relais",
+            datetime(2026, 9, 3, 10, tzinfo=UTC),
+            "mail-relay",
+        ),
+        TimelineEvent(
+            "order",
+            "Commande créée",
+            datetime(2026, 9, 1, 8, tzinfo=UTC),
+            "amazon-order",
+        ),
+        TimelineEvent(
+            "shipment",
+            "Expédiée",
+            datetime(2026, 9, 2, 9, tzinfo=UTC),
+            "carrier-event",
+        ),
     )
     timeline = build_timeline(events)
 
