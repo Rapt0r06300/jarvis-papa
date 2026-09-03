@@ -285,7 +285,7 @@ class BankTransaction:
         *,
         booking_date: str,
         value_date: str,
-        amount: Decimal | str | int | float,
+        amount: Decimal | str | float,
         currency: str,
         raw_description: str,
         raw_merchant: str,
