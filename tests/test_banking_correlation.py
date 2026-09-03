@@ -42,12 +42,12 @@ def test_p6_08_amount_anomaly_explains_baseline_and_insufficient_history() -> No
     assert outlier.is_unusual is True
     assert outlier.sample_sufficient is True
     assert outlier.sample_size == 8
-    assert outlier.baseline_amount > Decimal("0")
+    assert outlier.baseline_amount > Decimal(0)
     assert outlier.reasons
     assert "vérif" in outlier.recommendation.casefold()
     assert outlier.confirmed_fraud is False
 
-    sparse = assess_amount_anomaly(Decimal("119.00"), [Decimal("10"), Decimal("11")])
+    sparse = assess_amount_anomaly(Decimal("119.00"), [Decimal(10), Decimal(11)])
     assert sparse.sample_sufficient is False
     assert sparse.is_unusual is False
     assert "insuff" in " ".join(sparse.reasons).casefold()
