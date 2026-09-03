@@ -64,7 +64,7 @@ def _mondial_pickup() -> EmailMessage:
 
 
 def test_p4_15_tracking_normalization_is_stable_and_preserves_raw_carrier_source() -> None:
-    from jarvis_papa.parcel_intelligence import (
+    from jarvis_papa.parcel_coordination import (
         merge_tracking_references,
         normalize_tracking_reference,
     )
@@ -99,7 +99,10 @@ def test_p4_15_tracking_normalization_is_stable_and_preserves_raw_carrier_source
 
 
 def test_p4_16_amazon_and_carrier_same_tracking_converge_on_one_situation(tmp_path: Path) -> None:
-    from jarvis_papa.parcel_intelligence import build_carrier_tracking_update
+    from jarvis_papa.parcel_coordination import (
+        build_carrier_tracking_update,
+        correlate_order_carrier,
+    )
 
     store = SituationStore(tmp_path / "p4c-carrier.sqlite3")
     projector = CommerceProjector(store)
@@ -121,8 +124,19 @@ def test_p4_16_amazon_and_carrier_same_tracking_converge_on_one_situation(tmp_pa
 
     assert carrier_projection.situation is not None
     assert carrier_projection.situation.situation_id == amazon_projection.situation.situation_id
-    assert carrier_projection.match_state is MatchState.CONFIRMED_MATCH
     assert len(store.list_situations()) == 1
+
+    assert amazon.shipment is not None
+    strong = correlate_order_carrier(
+        OrderRecord(
+            order_id=EvidenceValue(_ORDER_ID, 0.99, (_prov("fixture", "order"),)),
+            state=OrderState.SHIPPED,
+            state_at=_BASE_TS,
+            shipment_id=EvidenceValue("MR 987-654-321 FR", 0.95, (_prov("fixture", "order-track"),)),
+        ),
+        carrier.shipment,
+    )
+    assert strong.state is MatchState.CONFIRMED_MATCH
 
     date_only_order = OrderRecord(
         order_id=EvidenceValue.unknown(),
@@ -136,19 +150,14 @@ def test_p4_16_amazon_and_carrier_same_tracking_converge_on_one_situation(tmp_pa
         state_at=_BASE_TS,
         expected_delivery=EvidenceValue("2026-09-03", 0.7, (_prov("fixture", "date-shipment"),)),
     )
-    from jarvis_papa.parcel_intelligence import correlate_order_carrier
-
     weak = correlate_order_carrier(date_only_order, date_only_shipment)
     assert weak.state in {MatchState.POSSIBLE_MATCH, MatchState.LIKELY_MATCH}
     assert weak.state is not MatchState.CONFIRMED_MATCH
 
 
 def test_p4_17_amazon_and_mondial_strong_tracking_yield_one_pickup_situation(tmp_path: Path) -> None:
-    from jarvis_papa.parcel_intelligence import (
-        MondialRelayParser,
-        ParcelProjector,
-        correlate_amazon_mondial,
-    )
+    from jarvis_papa.parcel_coordination import correlate_amazon_mondial
+    from jarvis_papa.parcel_intelligence import MondialRelayParser, ParcelProjector
 
     store = SituationStore(tmp_path / "p4c-mondial.sqlite3")
     commerce_projector = CommerceProjector(store)
@@ -169,7 +178,7 @@ def test_p4_17_amazon_and_mondial_strong_tracking_yield_one_pickup_situation(tmp
 
 
 def test_p4_18_pickup_acknowledgement_suppresses_immediate_repeat_and_cadence_tightens() -> None:
-    from jarvis_papa.parcel_intelligence import PickupReminderPolicy
+    from jarvis_papa.parcel_coordination import PickupReminderPolicy
 
     policy = PickupReminderPolicy()
     parcel_id = _TRACKING
@@ -214,7 +223,7 @@ def _order_situation(order_id: str, state: str, confidence: float, event_count: 
 
 
 def test_p4_19_order_briefing_projects_one_current_state_per_order_not_email() -> None:
-    from jarvis_papa.parcel_intelligence import build_order_briefing
+    from jarvis_papa.parcel_coordination import build_order_briefing
 
     situations = [
         _order_situation("ORDER-A", "delivered", 0.99, 4),
@@ -238,7 +247,7 @@ def test_p4_19_order_briefing_projects_one_current_state_per_order_not_email() -
 
 
 def test_p4_20_synthetic_parcel_benchmark_covers_ground_truth_and_correct_priority() -> None:
-    from jarvis_papa.parcel_intelligence import run_parcel_benchmark
+    from jarvis_papa.parcel_coordination import run_parcel_benchmark
 
     report = run_parcel_benchmark(now=_BASE_TS)
 
