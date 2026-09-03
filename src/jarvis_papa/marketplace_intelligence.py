@@ -437,20 +437,20 @@ def _parse_marketplace_email(
 def _detect_intent(text: str, folded: str) -> MarketplaceIntent:
     if _OFFER_RE.search(text):
         return MarketplaceIntent.OFFER
+    if "question" in folded or "?" in text:
+        return MarketplaceIntent.BUYER_QUESTION
     if any(term in folded for term in ("paiement reçu", "payment received", "a payé")):
         return MarketplaceIntent.PAYMENT
     if any(term in folded for term in ("à expédier", "a expedier", "expédition", "expedition")):
         return MarketplaceIntent.SHIPPING
     if any(term in folded for term in ("vente terminée", "vente terminee", "transaction terminée")):
         return MarketplaceIntent.COMPLETION
-    if any(term in folded for term in ("vendu", "acheté", "achete")):
+    if re.search(r"\b(?:vendu|acheté|achete)\b", folded):
         return MarketplaceIntent.SALE
     if any(term in folded for term in ("rendez-vous", "rendez vous", "rdv")):
         return MarketplaceIntent.APPOINTMENT
     if any(term in folded for term in ("disponible ?", "est disponible", "toujours disponible")):
         return MarketplaceIntent.AVAILABILITY
-    if "question" in folded or "?" in text:
-        return MarketplaceIntent.BUYER_QUESTION
     return MarketplaceIntent.UNKNOWN
 
 
