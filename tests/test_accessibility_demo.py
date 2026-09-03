@@ -1,9 +1,5 @@
 from __future__ import annotations
 
-import sys
-
-import pytest
-
 
 def test_p9_16_windows_175_percent_keeps_required_actions_accessible_with_scrolling() -> None:
     from jarvis_papa.accessibility_demo import certify_large_scale
