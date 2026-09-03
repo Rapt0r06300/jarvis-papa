@@ -53,7 +53,6 @@ target-version = "py312"
 "src/jarvis_papa/activity_surface.py" = ["I001"]
 "src/jarvis_papa/app.py" = ["F401"]
 "src/jarvis_papa/agent.py" = ["F401", "UP035"]
-"src/jarvis_papa/commerce_intelligence.py" = ["FURB167", "SIM114"]
 "src/jarvis_papa/conversation.py" = ["I001"]
 "src/jarvis_papa/dashboard.py" = ["I001"]
 "src/jarvis_papa/desktop_app.py" = ["BLE001", "RUF100", "UP035"]
