@@ -31,6 +31,17 @@ _SECRET_WORDS = (
     "cvv",
     "cryptogramme",
     "code pin",
+    "otp",
+    "otp code",
+    "code otp",
+    "2fa",
+    "code 2fa",
+    "code sms",
+    "sms code",
+    "code de confirmation",
+    "code de validation",
+    "one-time password",
+    "one time password",
 )
 _SECRET_PATTERNS = (
     re.compile(r"\bsk-[A-Za-z0-9_-]{12,}\b"),
@@ -68,6 +79,14 @@ _SENSITIVE_METADATA_KEYS = {
     "private_key",
     "cvv",
     "pin",
+    "otp",
+    "otp_code",
+    "2fa",
+    "2fa_code",
+    "sms_code",
+    "code_sms",
+    "confirmation_code",
+    "validation_code",
 }
 
 
