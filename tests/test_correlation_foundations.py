@@ -30,7 +30,11 @@ def test_p7_01_service_links_normalized_entities_with_evidence() -> None:
 
 
 def test_p7_02_strong_identifier_outweighs_date_only_similarity() -> None:
-    from jarvis_papa.correlation_foundations import EvidenceSignal, EvidenceStrength, score_correlation_evidence
+    from jarvis_papa.correlation_foundations import (
+        EvidenceSignal,
+        EvidenceStrength,
+        score_correlation_evidence,
+    )
 
     strong = score_correlation_evidence(
         (EvidenceSignal("tracking_id", EvidenceStrength.STRONG, True, "TRACK-9 exact"),)
