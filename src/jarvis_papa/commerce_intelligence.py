@@ -29,15 +29,24 @@ from jarvis_papa.situations import (
 
 _PARIS = ZoneInfo("Europe/Paris")
 _ORDER_RE = re.compile(r"\b\d{3}-\d{7}-\d{7}\b")
-_TRACKING_RE = re.compile(r"\b(?:MR[A-Z0-9]{8,}|1Z[A-Z0-9]{16}|[A-Z]{2}\d{9}[A-Z]{2})\b", re.I)
+_TRACKING_RE = re.compile(
+    r"\b(?:MR[A-Z0-9]{8,}|1Z[A-Z0-9]{16}|[A-Z]{2}\d{9}[A-Z]{2})\b",
+    re.IGNORECASE,
+)
 _DATE_RE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
-_AMOUNT_RE = re.compile(r"Montant\s*:\s*(\d+(?:[,.]\d{1,2})?)\s*€", re.I)
-_ITEM_RE = re.compile(r"Article\s*:\s*(.+?)(?=\.\s+Montant\s*:|$)", re.I)
-_SELLER_RE = re.compile(r"Vendeur\s*:\s*(.+?)(?=\s+Date\s+de\s+commande\s*:|$)", re.I)
-_PURCHASE_DATE_RE = re.compile(r"Date\s+de\s+commande\s*:\s*(\d{4}-\d{2}-\d{2})", re.I)
+_AMOUNT_RE = re.compile(r"Montant\s*:\s*(\d+(?:[,.]\d{1,2})?)\s*€", re.IGNORECASE)
+_ITEM_RE = re.compile(r"Article\s*:\s*(.+?)(?=\.\s+Montant\s*:|$)", re.IGNORECASE)
+_SELLER_RE = re.compile(
+    r"Vendeur\s*:\s*(.+?)(?=\s+Date\s+de\s+commande\s*:|$)",
+    re.IGNORECASE,
+)
+_PURCHASE_DATE_RE = re.compile(
+    r"Date\s+de\s+commande\s*:\s*(\d{4}-\d{2}-\d{2})",
+    re.IGNORECASE,
+)
 _EXPECTED_DATE_RE = re.compile(
     r"(?:Nouvelle\s+)?Livraison\s+prévue\s*:\s*(\d{4}-\d{2}-\d{2})",
-    re.I,
+    re.IGNORECASE,
 )
 
 
@@ -301,7 +310,11 @@ class AmazonCommerceParser:
             confidence=confidence,
             source_version=self.SOURCE_VERSION,
         )
-        order = self._order_record(message, order_id, provenance) if event_type == "order_confirmed" else None
+        order = (
+            self._order_record(message, order_id, provenance)
+            if event_type == "order_confirmed"
+            else None
+        )
         shipment = (
             self._shipment_record(message, event_type, order_id, tracking_id, provenance)
             if event_type != "order_confirmed"
@@ -318,7 +331,10 @@ class AmazonCommerceParser:
 
     @staticmethod
     def _event_type(lower: str, *, order_id: str, tracking_id: str) -> str:
-        if any(term in lower for term in ("a été livré", "a ete livre", "est livré", "est livre")):
+        if any(
+            term in lower
+            for term in ("a été livré", "a ete livre", "est livré", "est livre")
+        ):
             return "shipment_delivered"
         if any(term in lower for term in ("retard", "retardé", "retarde")):
             return "shipment_delayed"
@@ -426,7 +442,11 @@ class CommerceProjector:
         elif parsed.shipment is not None and situation.domain is SituationDomain.ORDER:
             shipment_order = _text_value(parsed.shipment.order_id)
             stored_order = str(situation.metadata.get("order_id") or "")
-            if shipment_order and stored_order and shipment_order.casefold() == stored_order.casefold():
+            if (
+                shipment_order
+                and stored_order
+                and shipment_order.casefold() == stored_order.casefold()
+            ):
                 match_state = MatchState.CONFIRMED_MATCH
             else:
                 match_state = MatchState.LIKELY_MATCH
@@ -522,7 +542,10 @@ class CommerceProjector:
         if event.event_type == "shipment_update":
             situation.action_state = ActionState.READ_ONLY
             situation.responsibility = Responsibility.WAITING
-            if situation.domain is SituationDomain.ORDER and situation.state in {"ordered", "processing"}:
+            if situation.domain is SituationDomain.ORDER and situation.state in {
+                "ordered",
+                "processing",
+            }:
                 _safe_transition(situation, "shipped", "shipment evidence", event.occurred_at)
             elif situation.domain is SituationDomain.SHIPMENT and situation.state in {
                 "new",
@@ -541,13 +564,19 @@ class CommerceProjector:
 
         if event.event_type != "shipment_delivered" or event.confidence < 0.8 or not added:
             return
-        if situation.domain is SituationDomain.ORDER and situation.state == "shipped":
-            _safe_transition(situation, "delivered", "verified delivery evidence", event.occurred_at)
-        elif situation.domain is SituationDomain.SHIPMENT and situation.state in {
-            "in_transit",
-            "delayed",
-        }:
-            _safe_transition(situation, "delivered", "verified delivery evidence", event.occurred_at)
+        can_transition_to_delivered = (
+            situation.domain is SituationDomain.ORDER and situation.state == "shipped"
+        ) or (
+            situation.domain is SituationDomain.SHIPMENT
+            and situation.state in {"in_transit", "delayed"}
+        )
+        if can_transition_to_delivered:
+            _safe_transition(
+                situation,
+                "delivered",
+                "verified delivery evidence",
+                event.occurred_at,
+            )
         outcome = VerifiedOutcome.create(
             action_id=f"commerce:{event.identity_key[:48]}",
             outcome_type="parcel_delivered",
@@ -576,7 +605,11 @@ def _optional_fact(
     confidence: float,
     provenance: tuple[ProvenanceRef, ...],
 ) -> EvidenceValue:
-    return EvidenceValue(value, confidence, provenance) if value is not None else EvidenceValue.unknown()
+    return (
+        EvidenceValue(value, confidence, provenance)
+        if value is not None
+        else EvidenceValue.unknown()
+    )
 
 
 def _text_value(value: EvidenceValue) -> str:
