@@ -84,8 +84,8 @@ def explain_transaction_simple_fr(
         )
     return TransactionExplanation(
         text=(
-            f"Cette opération de {amount_text} {transaction.currency} chez {merchant} "
-            "n'est pas identifiée avec assez d'éléments pour la relier à un achat précis."
+            f"Cette opération de {amount_text} {transaction.currency} chez {merchant} est non identifiée : "
+            "je n'ai pas assez d'éléments pour la relier à un achat précis."
         ),
         grounded=True,
         uncertain=True,
