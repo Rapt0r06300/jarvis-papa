@@ -9,6 +9,7 @@ from jarvis_papa.situation_store import SituationStore
 from jarvis_papa.situations import (
     ActionState,
     MatchState,
+    ProvenanceRef,
     Responsibility,
     SituationDomain,
     SituationTask,
@@ -91,7 +92,6 @@ def _delivered_message(
 
 def test_p4_01_order_model_is_typed_source_agnostic_and_provenance_aware() -> None:
     from jarvis_papa.commerce_intelligence import EvidenceValue, OrderRecord, OrderState
-    from jarvis_papa.situations import ProvenanceRef
 
     evidence = ProvenanceRef("email", "order-evidence", _BASE_TS)
     order = OrderRecord(
@@ -122,7 +122,6 @@ def test_p4_01_order_model_is_typed_source_agnostic_and_provenance_aware() -> No
 
 def test_p4_02_shipment_can_exist_independently_and_rejects_stale_backwards_state() -> None:
     from jarvis_papa.commerce_intelligence import EvidenceValue, ShipmentRecord, ShipmentState
-    from jarvis_papa.situations import ProvenanceRef
 
     evidence = ProvenanceRef("email", "shipment-evidence", _BASE_TS)
     shipment = ShipmentRecord(
