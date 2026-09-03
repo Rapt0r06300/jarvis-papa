@@ -10,7 +10,11 @@ def _prov(source: str, source_id: str) -> ProvenanceRef:
 
 
 def test_p7_11_platform_listing_id_links_deterministically_but_name_only_does_not() -> None:
-    from jarvis_papa.correlation_governance import MarketplaceConversation, MarketplaceListing, link_marketplace_conversation
+    from jarvis_papa.correlation_governance import (
+        MarketplaceConversation,
+        MarketplaceListing,
+        link_marketplace_conversation,
+    )
 
     listings = (
         MarketplaceListing("ebay", "listing-42", "Casque Sony", "item-42", (_prov("market", "listing-42"),)),
