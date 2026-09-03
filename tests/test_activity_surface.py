@@ -204,16 +204,29 @@ def test_p3_20_startup_metrics_are_content_free_and_baseline_comparable(tmp_path
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="canonical desktop requires Windows PySide6")
-def test_p3_18_canonical_desktop_exposes_runtime_activity_surface() -> None:
+def test_p3_18_canonical_desktop_exposes_runtime_activity_surface(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtCore import QThreadPool
     from PySide6.QtWidgets import QApplication
 
     from jarvis_papa.activity_desktop import JarvisActivityWindow
     from jarvis_papa.professional_desktop_plus import JarvisProfessionalWindow
 
+    # The test verifies the real canonical widget tree and activity projection, not
+    # network, tray, global-hotkey or speech infrastructure. Disable those side
+    # effects before construction so no Qt/background worker survives this test.
+    monkeypatch.setattr(JarvisActivityWindow, "_say", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(JarvisActivityWindow, "refresh", lambda _self: None)
+    monkeypatch.setattr(JarvisActivityWindow, "refresh_diagnostics", lambda _self: None)
+    monkeypatch.setattr(JarvisActivityWindow, "refresh_capabilities", lambda _self: None)
+    monkeypatch.setattr(JarvisActivityWindow, "refresh_daily_activity", lambda _self: None)
+    monkeypatch.setattr(JarvisActivityWindow, "_install_overlay", lambda _self: None)
+    monkeypatch.setattr(JarvisActivityWindow, "_install_notifications", lambda _self: None)
+
     app = QApplication.instance() or QApplication([])
     window = JarvisActivityWindow()
-    window._say = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
     try:
         assert issubclass(JarvisActivityWindow, JarvisProfessionalWindow)
         assert window.runtime_activity_heading.text() == "Ce que Jarvis fait"
@@ -227,5 +240,16 @@ def test_p3_18_canonical_desktop_exposes_runtime_activity_surface() -> None:
         assert "Analyse des nouveaux messages" in window.activity_detail.text()
         window.begin_activity("Je vérifie une sauvegarde locale.", speak=False)
     finally:
+        for timer_name in (
+            "speaking_timer",
+            "activity_timer",
+            "refresh_timer",
+            "voice_timer",
+            "daily_activity_timer",
+        ):
+            timer = getattr(window, timer_name, None)
+            if timer is not None:
+                timer.stop()
         window.close()
+        QThreadPool.globalInstance().waitForDone(1000)
         app.processEvents()
