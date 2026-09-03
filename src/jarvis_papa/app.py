@@ -20,6 +20,7 @@ from jarvis_papa.mail_intelligence import intelligent_mail_assistant
 from jarvis_papa.maintenance_routes import router as maintenance_router
 from jarvis_papa.memory_center_routes import router as memory_center_router
 from jarvis_papa.memory_semantic import semantic_memory_store
+from jarvis_papa.release_certification import build_autopilot_smoke
 from jarvis_papa.speech import SpeechEvent, speech_coordinator
 from jarvis_papa.thunderbird import thunderbird_bridge_state
 from jarvis_papa.thunderbird_probe_routes import router as thunderbird_probe_router
@@ -167,6 +168,11 @@ def thunderbird_bridge_heartbeat(request: ThunderbirdHeartbeatRequest) -> dict[s
 @app.get("/api/thunderbird/bridge/status")
 def thunderbird_bridge_status() -> dict[str, object]:
     return thunderbird_bridge_state.snapshot()
+
+
+@app.get("/api/robert/autopilot/smoke")
+def robert_autopilot_smoke() -> dict[str, object]:
+    return build_autopilot_smoke().to_dict()
 
 
 @app.get("/api/voice/status")
