@@ -46,6 +46,28 @@ def test_p10_18_autopilot_smoke_manifest_includes_runtime_and_protected_route() 
     assert smoke.decision_card_title
 
 
+def test_p10_18_autopilot_smoke_route_requires_local_api_token_and_executes(monkeypatch) -> None:
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setenv("JARVIS_LOCAL_API_TOKEN", "release-smoke-token")
+    from jarvis_papa.app import app
+
+    client = TestClient(app)
+    denied = client.get("/api/robert/autopilot/smoke")
+    allowed = client.get(
+        "/api/robert/autopilot/smoke",
+        headers={"Authorization": "Bearer release-smoke-token"},
+    )
+
+    assert denied.status_code == 401
+    assert allowed.status_code == 200
+    payload = allowed.json()
+    assert payload["situation_ingested"] is True
+    assert payload["briefing"]
+    assert payload["decision_card_title"]
+    assert payload["external_action_allowed"] is False
+
+
 def test_p10_19_restore_preserves_situations_but_drops_ephemeral_authorization_and_secrets() -> None:
     from jarvis_papa.release_certification import sanitize_restored_state
 
