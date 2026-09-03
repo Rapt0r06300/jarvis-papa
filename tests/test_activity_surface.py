@@ -209,6 +209,7 @@ def test_p3_18_canonical_desktop_exposes_runtime_activity_surface() -> None:
     script = r'''
 import os
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
+from types import SimpleNamespace
 from PySide6.QtCore import QThreadPool
 from PySide6.QtWidgets import QApplication
 from jarvis_papa.activity_desktop import JarvisActivityWindow
@@ -220,7 +221,9 @@ JarvisActivityWindow.refresh = lambda _self: None
 JarvisActivityWindow.refresh_diagnostics = lambda _self: None
 JarvisActivityWindow.refresh_capabilities = lambda _self: None
 JarvisActivityWindow.refresh_daily_activity = lambda _self: None
-JarvisActivityWindow._install_overlay = lambda _self: None
+JarvisActivityWindow._install_overlay = lambda self: setattr(
+    self, "overlay_hotkey", SimpleNamespace(close=lambda: None)
+)
 JarvisActivityWindow._install_notifications = lambda _self: None
 
 app = QApplication.instance() or QApplication([])
