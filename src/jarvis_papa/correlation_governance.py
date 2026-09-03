@@ -4,7 +4,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from enum import StrEnum
 
-from .situations import ProvenanceRef
+from jarvis_papa.situations import ProvenanceRef
 
 
 _SECRET_KEYS = {
