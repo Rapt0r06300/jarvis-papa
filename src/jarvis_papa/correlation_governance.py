@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from enum import StrEnum
-from typing import Mapping
 
 from .situations import ProvenanceRef
 
@@ -93,7 +93,7 @@ def link_marketplace_conversation(
             listing.item_id,
             0.99,
             ("platform_listing_id",),
-            tuple((*conversation.provenance, *listing.provenance)),
+            (*conversation.provenance, *listing.provenance),
         )
 
     name_matches = [
@@ -111,7 +111,7 @@ def link_marketplace_conversation(
             listing.item_id,
             0.55,
             ("item_name",),
-            tuple((*conversation.provenance, *listing.provenance)),
+            (*conversation.provenance, *listing.provenance),
         )
     return MarketplaceListingLink(False, "", "", 0.0, (), conversation.provenance)
 
@@ -226,7 +226,7 @@ class RelationStore:
                 current,
                 active=True,
                 user_label="Oui, c’est la même commande",
-                provenance=tuple((*current.provenance, provenance)),
+                provenance=(*current.provenance, provenance),
                 rejected_evidence_version="",
             )
             action = "confirm"
@@ -235,7 +235,7 @@ class RelationStore:
                 current,
                 active=False,
                 user_label="Non",
-                provenance=tuple((*current.provenance, provenance)),
+                provenance=(*current.provenance, provenance),
                 rejected_evidence_version=current.evidence_version,
             )
             action = "reject"
