@@ -11,7 +11,7 @@ def _prov(source_id: str, observed_at: float = _BASE_TS) -> ProvenanceRef:
 
 
 def test_p5_15_stale_buyer_waiting_for_robert_surfaces_once_and_low_value_stays_secondary() -> None:
-    from jarvis_papa.marketplace_intelligence import (
+    from jarvis_papa.marketplace_safety import (
         ConversationAttention,
         MarketplaceConversationState,
         surface_stale_buyer_conversation,
@@ -65,7 +65,7 @@ def test_p5_15_stale_buyer_waiting_for_robert_surfaces_once_and_low_value_stays_
 
 
 def test_p5_16_completed_sale_closes_obsolete_tasks_but_preserves_searchable_history() -> None:
-    from jarvis_papa.marketplace_intelligence import (
+    from jarvis_papa.marketplace_safety import (
         MarketplaceSituationState,
         close_completed_marketplace_situation,
     )
@@ -93,7 +93,7 @@ def test_p5_16_completed_sale_closes_obsolete_tasks_but_preserves_searchable_his
 
 
 def test_p5_17_suspicious_off_platform_payment_secret_link_and_prompt_injection_stay_cautious() -> None:
-    from jarvis_papa.marketplace_intelligence import (
+    from jarvis_papa.marketplace_safety import (
         MarketplaceRiskSignal,
         assess_marketplace_message_safety,
     )
@@ -118,7 +118,7 @@ def test_p5_17_suspicious_off_platform_payment_secret_link_and_prompt_injection_
 
 
 def test_p5_18_marketplace_financial_mutations_are_denied_even_when_untrusted_content_demands_them() -> None:
-    from jarvis_papa.marketplace_intelligence import (
+    from jarvis_papa.marketplace_safety import (
         MarketplaceMutationOperation,
         enforce_marketplace_mutation_policy,
     )
@@ -147,9 +147,9 @@ def test_p5_19_decision_card_keeps_recommendation_separate_from_three_governed_c
         NegotiationDecision,
         NegotiationOffer,
         NegotiationPolicy,
-        build_marketplace_decision_card,
         recommend_negotiation,
     )
+    from jarvis_papa.marketplace_safety import build_marketplace_decision_card
 
     price_provenance = (_prov("listing-price"),)
     asking = GroundedAskingPrice(
@@ -197,7 +197,7 @@ def test_p5_19_decision_card_keeps_recommendation_separate_from_three_governed_c
 
 
 def test_p5_20_synthetic_benchmark_covers_ground_truth_and_ignores_twenty_newsletters() -> None:
-    from jarvis_papa.marketplace_intelligence import (
+    from jarvis_papa.marketplace_safety import (
         MarketplaceEvaluationMessage,
         build_marketplace_evaluation_scenarios,
         select_actionable_marketplace_messages,
