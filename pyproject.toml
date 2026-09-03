@@ -33,7 +33,7 @@ build = [
 ]
 
 [project.scripts]
-jarvis-papa = "jarvis_papa.professional_desktop_plus:run"
+jarvis-papa = "jarvis_papa.activity_desktop:run"
 jarvis-papa-server = "jarvis_papa.main:run"
 jarvis-native-host = "jarvis_papa.native_host:run"
 jarvis-diagnostic = "jarvis_papa.diagnostics:run_cli"
@@ -50,6 +50,7 @@ line-length = 100
 target-version = "py312"
 
 [tool.ruff.lint.per-file-ignores]
+"src/jarvis_papa/activity_surface.py" = ["I001"]
 "src/jarvis_papa/app.py" = ["F401"]
 "src/jarvis_papa/agent.py" = ["F401", "UP035"]
 "src/jarvis_papa/conversation.py" = ["I001"]
