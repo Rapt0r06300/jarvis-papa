@@ -58,6 +58,7 @@ target-version = "py312"
 "src/jarvis_papa/dashboard.py" = ["I001"]
 "src/jarvis_papa/desktop_app.py" = ["BLE001", "RUF100", "UP035"]
 "src/jarvis_papa/email_intelligence.py" = ["I001"]
+"src/jarvis_papa/fusion_context.py" = ["I001"]
 "src/jarvis_papa/procedural_memory.py" = ["RUF100"]
 "src/jarvis_papa/professional_desktop.py" = ["BLE001", "I001", "UP035"]
 "src/jarvis_papa/pronunciation.py" = ["I001"]
