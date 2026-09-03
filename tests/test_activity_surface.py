@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -204,52 +205,62 @@ def test_p3_20_startup_metrics_are_content_free_and_baseline_comparable(tmp_path
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="canonical desktop requires Windows PySide6")
-def test_p3_18_canonical_desktop_exposes_runtime_activity_surface(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    from PySide6.QtCore import QThreadPool
-    from PySide6.QtWidgets import QApplication
+def test_p3_18_canonical_desktop_exposes_runtime_activity_surface() -> None:
+    script = r'''
+import os
+os.environ["QT_QPA_PLATFORM"] = "offscreen"
+from PySide6.QtCore import QThreadPool
+from PySide6.QtWidgets import QApplication
+from jarvis_papa.activity_desktop import JarvisActivityWindow
+from jarvis_papa.professional_desktop_plus import JarvisProfessionalWindow
+from jarvis_papa.runtime_progress import RunId, RuntimeProgressEvent, RuntimeProgressType, StageId
 
-    from jarvis_papa.activity_desktop import JarvisActivityWindow
-    from jarvis_papa.professional_desktop_plus import JarvisProfessionalWindow
+JarvisActivityWindow._say = lambda *_args, **_kwargs: None
+JarvisActivityWindow.refresh = lambda _self: None
+JarvisActivityWindow.refresh_diagnostics = lambda _self: None
+JarvisActivityWindow.refresh_capabilities = lambda _self: None
+JarvisActivityWindow.refresh_daily_activity = lambda _self: None
+JarvisActivityWindow._install_overlay = lambda _self: None
+JarvisActivityWindow._install_notifications = lambda _self: None
 
-    # The test verifies the real canonical widget tree and activity projection, not
-    # network, tray, global-hotkey or speech infrastructure. Disable those side
-    # effects before construction so no Qt/background worker survives this test.
-    monkeypatch.setattr(JarvisActivityWindow, "_say", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(JarvisActivityWindow, "refresh", lambda _self: None)
-    monkeypatch.setattr(JarvisActivityWindow, "refresh_diagnostics", lambda _self: None)
-    monkeypatch.setattr(JarvisActivityWindow, "refresh_capabilities", lambda _self: None)
-    monkeypatch.setattr(JarvisActivityWindow, "refresh_daily_activity", lambda _self: None)
-    monkeypatch.setattr(JarvisActivityWindow, "_install_overlay", lambda _self: None)
-    monkeypatch.setattr(JarvisActivityWindow, "_install_notifications", lambda _self: None)
-
-    app = QApplication.instance() or QApplication([])
-    window = JarvisActivityWindow()
-    try:
-        assert issubclass(JarvisActivityWindow, JarvisProfessionalWindow)
-        assert window.runtime_activity_heading.text() == "Ce que Jarvis fait"
-        window.consume_runtime_progress(
-            _event(
-                RuntimeProgressType.STAGE_STARTED,
-                "Analyse des nouveaux messages",
-                at=120.0,
-            )
-        )
-        assert "Analyse des nouveaux messages" in window.activity_detail.text()
-        window.begin_activity("Je vérifie une sauvegarde locale.", speak=False)
-    finally:
-        for timer_name in (
-            "speaking_timer",
-            "activity_timer",
-            "refresh_timer",
-            "voice_timer",
-            "daily_activity_timer",
-        ):
-            timer = getattr(window, timer_name, None)
-            if timer is not None:
-                timer.stop()
-        window.close()
-        QThreadPool.globalInstance().waitForDone(1000)
-        app.processEvents()
+app = QApplication.instance() or QApplication([])
+window = JarvisActivityWindow()
+assert issubclass(JarvisActivityWindow, JarvisProfessionalWindow)
+assert window.runtime_activity_heading.text() == "Ce que Jarvis fait"
+event = RuntimeProgressEvent.create(
+    event_type=RuntimeProgressType.STAGE_STARTED,
+    run_id=RunId("run-p3e-subprocess"),
+    stage_id=StageId("email_triage"),
+    timestamp=120.0,
+    public_label="Analyse des nouveaux messages",
+)
+window.consume_runtime_progress(event)
+assert "Analyse des nouveaux messages" in window.activity_detail.text()
+window.begin_activity("Je vérifie une sauvegarde locale.", speak=False)
+for timer_name in (
+    "speaking_timer",
+    "activity_timer",
+    "refresh_timer",
+    "voice_timer",
+    "daily_activity_timer",
+):
+    timer = getattr(window, timer_name, None)
+    if timer is not None:
+        timer.stop()
+window.close()
+window.deleteLater()
+QThreadPool.globalInstance().waitForDone(1000)
+app.processEvents()
+app.quit()
+'''
+    environment = os.environ.copy()
+    environment["QT_QPA_PLATFORM"] = "offscreen"
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+        env=environment,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
