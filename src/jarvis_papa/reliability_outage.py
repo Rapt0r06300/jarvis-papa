@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
-from typing import Any
 
 
 class IdempotentIngestionStore:
@@ -32,7 +31,7 @@ class IdempotentIngestionStore:
         return dict(self._events)
 
     @classmethod
-    def from_snapshot(cls, snapshot: dict[str, tuple[str, str, str]]) -> "IdempotentIngestionStore":
+    def from_snapshot(cls, snapshot: dict[str, tuple[str, str, str]]) -> IdempotentIngestionStore:
         store = cls()
         store._events = dict(snapshot)
         return store
@@ -121,7 +120,13 @@ class SourceIsolationResult:
 
 def run_source_isolation_case(*, failed_source: str) -> SourceIsolationResult:
     source = failed_source.casefold().strip()
-    health = {"ebay": "healthy", "leboncoin": "healthy", "mail": "healthy", "parcel": "healthy", "documents": "healthy"}
+    health = {
+        "ebay": "healthy",
+        "leboncoin": "healthy",
+        "mail": "healthy",
+        "parcel": "healthy",
+        "documents": "healthy",
+    }
     health[source] = "degraded"
     return SourceIsolationResult(
         global_run_completed=True,
