@@ -137,15 +137,14 @@ def build_autopilot_smoke() -> AutopilotSmokeResult:
     card = build_decision_card(
         title="Retirer le colis synthétique",
         recommendation="Vérifier le code puis préparer le retrait.",
+        reason="Fixture synthétique de certification Robert Autopilot.",
         alternatives=("Reporter le retrait",),
-        evidence=("fixture:synthetic-parcel",),
-        external_action=False,
     )
     return AutopilotSmokeResult(
         situation_ingested=True,
         briefing=today.briefing,
         decision_card_title=card.title,
-        external_action_allowed=False,
+        external_action_allowed=card.external_send_allowed,
     )
 
 
