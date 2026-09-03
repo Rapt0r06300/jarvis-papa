@@ -523,3 +523,522 @@ def _clean_text(value: object, limit: int) -> str:
 
 def _clean_identifier(value: object, limit: int) -> str:
     return re.sub(r"[^A-Za-z0-9_.:@/-]+", "-", str(value).strip())[:limit]
+
+
+class AskingPriceState(StrEnum):
+    VERIFIED = "verified"
+    STALE = "stale"
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True, slots=True)
+class GroundedAskingPrice:
+    amount: float | None
+    currency: str | None
+    state: AskingPriceState
+    provenance: tuple[ProvenanceRef, ...]
+    reason: str
+    guessed: bool = False
+
+    def __post_init__(self) -> None:
+        if self.guessed:
+            raise ValueError("marketplace asking prices may never be guessed")
+        state = AskingPriceState(self.state)
+        amount = None if self.amount is None else float(self.amount)
+        currency = None if self.currency is None else _clean_identifier(self.currency.upper(), 8)
+        if amount is not None and amount < 0:
+            raise ValueError("asking price must be non-negative")
+        if state is AskingPriceState.UNKNOWN and amount is not None:
+            raise ValueError("unknown asking price cannot contain an amount")
+        if amount is not None and not currency:
+            raise ValueError("known asking price requires a currency")
+        object.__setattr__(self, "amount", amount)
+        object.__setattr__(self, "currency", currency)
+        object.__setattr__(self, "state", state)
+        object.__setattr__(self, "provenance", tuple(dict.fromkeys(self.provenance))[:16])
+        object.__setattr__(self, "reason", _clean_text(self.reason, 600))
+        object.__setattr__(self, "guessed", False)
+
+
+def ground_asking_price(
+    listing: MarketplaceListing | None,
+    *,
+    now: float | None = None,
+    max_age_seconds: float = 900.0,
+) -> GroundedAskingPrice:
+    if listing is None:
+        return GroundedAskingPrice(
+            None,
+            None,
+            AskingPriceState.UNKNOWN,
+            (),
+            "Prix inconnu : aucune annonce accessible ne permet de le vérifier.",
+        )
+    max_age = max(0.0, float(max_age_seconds))
+    observed_at = max(
+        (item.observed_at for item in (*listing.price.provenance, *listing.provenance)),
+        default=0.0,
+    )
+    current_time = float(now if now is not None else time.time())
+    provenance = tuple(dict.fromkeys((*listing.price.provenance, *listing.provenance)))[:16]
+    if not provenance or observed_at <= 0:
+        return GroundedAskingPrice(
+            listing.price.amount,
+            listing.price.currency,
+            AskingPriceState.STALE,
+            provenance,
+            "Prix ancien/non vérifiable : la source datée est absente.",
+        )
+    age = max(0.0, current_time - observed_at)
+    if age > max_age:
+        return GroundedAskingPrice(
+            listing.price.amount,
+            listing.price.currency,
+            AskingPriceState.STALE,
+            provenance,
+            f"Prix ancien (stale) : dernière preuve observée il y a {int(age)} s.",
+        )
+    return GroundedAskingPrice(
+        listing.price.amount,
+        listing.price.currency,
+        AskingPriceState.VERIFIED,
+        provenance,
+        "Prix courant vérifié à partir de la preuve de l'annonce.",
+    )
+
+
+class NegotiationDecision(StrEnum):
+    ACCEPT = "accept"
+    COUNTER = "counter"
+    REFUSE = "refuse"
+    NEEDS_PRICE = "needs_price"
+
+
+@dataclass(frozen=True, slots=True)
+class NegotiationPolicy:
+    counter_ratio: float = 0.90
+    accept_ratio: float = 0.95
+    refuse_below_ratio: float = 0.60
+
+    def __post_init__(self) -> None:
+        counter = float(self.counter_ratio)
+        accept = float(self.accept_ratio)
+        refuse = float(self.refuse_below_ratio)
+        if not (0.0 <= refuse <= counter <= accept <= 1.0):
+            raise ValueError("negotiation ratios must satisfy refuse <= counter <= accept <= 1")
+        object.__setattr__(self, "counter_ratio", counter)
+        object.__setattr__(self, "accept_ratio", accept)
+        object.__setattr__(self, "refuse_below_ratio", refuse)
+
+
+@dataclass(frozen=True, slots=True)
+class NegotiationRecommendation:
+    decision: NegotiationDecision
+    proposed_amount: float | None
+    currency: str | None
+    basis: str
+    action_state: ActionState
+    executes_transaction: bool
+    provenance: tuple[ProvenanceRef, ...]
+    offer_amount: float | None = None
+    asking_amount: float | None = None
+
+    def __post_init__(self) -> None:
+        if self.executes_transaction:
+            raise ValueError("negotiation recommendations cannot execute transactions")
+        object.__setattr__(self, "decision", NegotiationDecision(self.decision))
+        object.__setattr__(self, "basis", _clean_text(self.basis, 1000))
+        object.__setattr__(self, "provenance", tuple(dict.fromkeys(self.provenance))[:16])
+        object.__setattr__(self, "executes_transaction", False)
+
+
+def recommend_negotiation(
+    offer: NegotiationOffer,
+    asking_price: GroundedAskingPrice,
+    policy: NegotiationPolicy,
+) -> NegotiationRecommendation:
+    provenance = tuple(dict.fromkeys((*offer.provenance, *asking_price.provenance)))[:16]
+    if asking_price.state is not AskingPriceState.VERIFIED or asking_price.amount is None:
+        return NegotiationRecommendation(
+            NegotiationDecision.NEEDS_PRICE,
+            None,
+            asking_price.currency or offer.currency,
+            f"Aucune recommandation chiffrée : {asking_price.reason}",
+            ActionState.VERIFY,
+            False,
+            provenance,
+            offer_amount=offer.offered_amount,
+            asking_amount=asking_price.amount,
+        )
+    asking = asking_price.amount
+    ratio = offer.offered_amount / asking if asking > 0 else 1.0
+    if ratio >= policy.accept_ratio:
+        decision = NegotiationDecision.ACCEPT
+        proposed = None
+        rationale = "offre au-dessus du seuil d'acceptation"
+    elif ratio < policy.refuse_below_ratio:
+        decision = NegotiationDecision.REFUSE
+        proposed = None
+        rationale = "offre sous le seuil minimal configuré"
+    else:
+        decision = NegotiationDecision.COUNTER
+        proposed = round(asking * policy.counter_ratio, 2)
+        rationale = f"contre-proposition à {policy.counter_ratio:.0%} du prix vérifié"
+    basis = (
+        f"Offre {offer.offered_amount:g} {offer.currency} face au prix vérifié "
+        f"de {asking:g} {asking_price.currency}; {rationale}."
+    )
+    return NegotiationRecommendation(
+        decision,
+        proposed,
+        asking_price.currency,
+        basis,
+        ActionState.USER_DECISION,
+        False,
+        provenance,
+        offer_amount=offer.offered_amount,
+        asking_amount=asking,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class MarketplaceReplyDraft:
+    body: str
+    sent: bool
+    action_state: ActionState
+    grounded_facts: tuple[str, ...]
+    provenance: tuple[ProvenanceRef, ...]
+
+    def __post_init__(self) -> None:
+        if self.sent:
+            raise ValueError("marketplace reply drafts must remain unsent")
+        object.__setattr__(self, "body", _clean_text(self.body, 3000))
+        object.__setattr__(self, "sent", False)
+        object.__setattr__(self, "grounded_facts", _clean_refs(self.grounded_facts))
+        object.__setattr__(self, "provenance", tuple(dict.fromkeys(self.provenance))[:16])
+
+
+def draft_marketplace_reply(
+    *,
+    listing: MarketplaceListing,
+    asking_price: GroundedAskingPrice,
+    recommendation: NegotiationRecommendation,
+) -> MarketplaceReplyDraft:
+    facts = ["listing_title"]
+    chain = [*listing.provenance, *asking_price.provenance, *recommendation.provenance]
+    if asking_price.amount is not None:
+        facts.append("asking_price")
+    if (
+        recommendation.decision is NegotiationDecision.COUNTER
+        and recommendation.proposed_amount is not None
+    ):
+        facts.append("counter_price")
+        amount = recommendation.proposed_amount
+        currency = recommendation.currency or "EUR"
+        body = f"Bonjour, pour {listing.title}, je peux vous proposer {amount:g} {currency}. Merci."
+    elif recommendation.decision is NegotiationDecision.ACCEPT:
+        body = f"Bonjour, votre offre pour {listing.title} me convient. Merci."
+    elif recommendation.decision is NegotiationDecision.REFUSE:
+        body = f"Bonjour, merci pour votre offre concernant {listing.title}, je préfère la refuser."
+    else:
+        body = f"Bonjour, je vérifie le prix de {listing.title} avant de vous répondre. Merci."
+    return MarketplaceReplyDraft(
+        body=body,
+        sent=False,
+        action_state=ActionState.REPLY,
+        grounded_facts=tuple(facts),
+        provenance=tuple(dict.fromkeys(chain))[:16],
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class MarketplaceReplyStyle:
+    scope: str
+    observation_count: int
+    durable: bool
+    concise: bool
+    polite: bool
+    direct: bool
+    concise_confidence: float
+    polite_confidence: float
+    direct_confidence: float
+    provenance: tuple[ProvenanceRef, ...]
+
+
+class MarketplaceStyleLearner:
+    """Scoped style learner that needs repeated approved replies before durability."""
+
+    def __init__(self, *, min_observations: int = 3) -> None:
+        self.min_observations = max(2, int(min_observations))
+        self._observations: dict[str, list[tuple[str, ProvenanceRef]]] = {}
+        self._overrides: dict[str, dict[str, bool]] = {}
+
+    def record_approved_reply(self, scope: str, text: str, provenance: ProvenanceRef) -> None:
+        clean_scope = _clean_identifier(scope, 160)
+        clean_text = _clean_text(text, 3000)
+        if not clean_scope or not clean_text:
+            raise ValueError("style learning requires scope and approved reply text")
+        self._observations.setdefault(clean_scope, []).append((clean_text, provenance))
+
+    def inspect(self, scope: str) -> MarketplaceReplyStyle | None:
+        clean_scope = _clean_identifier(scope, 160)
+        observations = self._observations.get(clean_scope, [])
+        if not observations:
+            return None
+        count = len(observations)
+        concise_votes = sum(len(text) <= 160 for text, _ in observations)
+        polite_votes = sum(
+            any(marker in text.casefold() for marker in ("bonjour", "merci", "cordialement"))
+            for text, _ in observations
+        )
+        direct_votes = sum(text.count(".") + text.count("!") <= 3 for text, _ in observations)
+        overrides = self._overrides.get(clean_scope, {})
+        concise = overrides.get("concise", concise_votes * 2 >= count)
+        polite = overrides.get("polite", polite_votes * 2 >= count)
+        direct = overrides.get("direct", direct_votes * 2 >= count)
+        provenance = tuple(dict.fromkeys(item for _, item in observations))[:16]
+        denominator = max(1, count)
+        return MarketplaceReplyStyle(
+            scope=clean_scope,
+            observation_count=count,
+            durable=count >= self.min_observations,
+            concise=concise,
+            polite=polite,
+            direct=direct,
+            concise_confidence=concise_votes / denominator,
+            polite_confidence=polite_votes / denominator,
+            direct_confidence=direct_votes / denominator,
+            provenance=provenance,
+        )
+
+    def correct(
+        self,
+        scope: str,
+        *,
+        concise: bool | None = None,
+        polite: bool | None = None,
+        direct: bool | None = None,
+    ) -> MarketplaceReplyStyle | None:
+        clean_scope = _clean_identifier(scope, 160)
+        if clean_scope not in self._observations:
+            return None
+        values = self._overrides.setdefault(clean_scope, {})
+        for key, value in (("concise", concise), ("polite", polite), ("direct", direct)):
+            if value is not None:
+                values[key] = bool(value)
+        return self.inspect(clean_scope)
+
+    def forget(self, scope: str) -> None:
+        clean_scope = _clean_identifier(scope, 160)
+        self._observations.pop(clean_scope, None)
+        self._overrides.pop(clean_scope, None)
+
+
+class DeliveryMode(StrEnum):
+    SHIPPING = "shipping"
+    HANDOFF = "handoff"
+    PICKUP = "pickup"
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True, slots=True)
+class DeliveryIntent:
+    mode: DeliveryMode
+    action_state: ActionState
+    provenance: tuple[ProvenanceRef, ...]
+    text: str
+    creates_transaction: bool = False
+
+    def __post_init__(self) -> None:
+        if self.creates_transaction:
+            raise ValueError("delivery intent cannot create a transaction")
+        object.__setattr__(self, "mode", DeliveryMode(self.mode))
+        object.__setattr__(self, "text", _clean_text(self.text, 2000))
+        object.__setattr__(self, "provenance", tuple(dict.fromkeys(self.provenance))[:16])
+        object.__setattr__(self, "creates_transaction", False)
+
+
+def extract_delivery_intent(text: str, *, provenance: ProvenanceRef) -> DeliveryIntent:
+    clean = _clean_text(text, 3000)
+    folded = clean.casefold()
+    if any(term in folded for term in ("mains propres", "main propre", "remise en main")):
+        mode = DeliveryMode.HANDOFF
+    elif any(term in folded for term in ("retrait", "venir chercher", "récupérer", "recuperer")):
+        mode = DeliveryMode.PICKUP
+    elif any(term in folded for term in ("livr", "expédi", "expedi", "envoi", "colis")):
+        mode = DeliveryMode.SHIPPING
+    else:
+        mode = DeliveryMode.UNKNOWN
+    action = ActionState.USER_DECISION if mode is not DeliveryMode.UNKNOWN else ActionState.VERIFY
+    return DeliveryIntent(mode, action, (provenance,), clean, False)
+
+
+@dataclass(frozen=True, slots=True)
+class MarketplaceAppointmentProposal:
+    source_text: str
+    normalized_at: float | None
+    timezone_name: str
+    location: str | None
+    needs_confirmation: bool
+    action_state: ActionState
+    provenance: tuple[ProvenanceRef, ...]
+
+
+def extract_appointment_proposal(
+    text: str,
+    *,
+    message_timestamp: float,
+    timezone_name: str,
+    provenance: ProvenanceRef,
+) -> MarketplaceAppointmentProposal:
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+
+    clean = _clean_text(text, 3000)
+    zone = ZoneInfo(timezone_name)
+    received = datetime.fromtimestamp(float(message_timestamp), tz=zone)
+    exact = re.search(r"demain\s+à\s+(\d{1,2})h(?:(\d{2}))?", clean, re.IGNORECASE)
+    normalized_at: float | None = None
+    source_text = ""
+    location: str | None = None
+    search_from = 0
+    if exact is not None:
+        hour = int(exact.group(1))
+        minute = int(exact.group(2) or 0)
+        if 0 <= hour <= 23 and 0 <= minute <= 59:
+            target = (received + timedelta(days=1)).replace(
+                hour=hour,
+                minute=minute,
+                second=0,
+                microsecond=0,
+            )
+            normalized_at = target.timestamp()
+        source_text = exact.group(0)
+        search_from = exact.end()
+    else:
+        ambiguous = re.search(
+            r"demain(?:\s+en\s+fin\s+de\s+journée)?",
+            clean,
+            re.IGNORECASE,
+        )
+        if ambiguous is not None:
+            source_text = ambiguous.group(0)
+            search_from = ambiguous.end()
+    remainder = clean[search_from:]
+    location_match = re.search(
+        r"\s+à\s+([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ' -]{1,80}?)(?:\s*\?|[.,;!]|$)",
+        remainder,
+    )
+    if location_match is not None:
+        location = _clean_text(location_match.group(1), 120)
+    needs_confirmation = normalized_at is None or location is None
+    return MarketplaceAppointmentProposal(
+        source_text=source_text,
+        normalized_at=normalized_at,
+        timezone_name=timezone_name,
+        location=location,
+        needs_confirmation=needs_confirmation,
+        action_state=ActionState.USER_DECISION,
+        provenance=(provenance,),
+    )
+
+
+class SaleLifecycleState(StrEnum):
+    LISTED = "listed"
+    NEGOTIATING = "negotiating"
+    SOLD_PAYMENT_PENDING = "sold_payment_pending"
+    PAID_SHIP_REQUIRED = "paid_ship_required"
+    SHIPPED = "shipped"
+    COMPLETED = "completed"
+
+
+@dataclass(frozen=True, slots=True)
+class MarketplaceSaleLifecycle:
+    listing_id: str
+    state: SaleLifecycleState
+    provenance: tuple[ProvenanceRef, ...] = ()
+
+    def __post_init__(self) -> None:
+        listing_id = _clean_identifier(self.listing_id, 240)
+        if not listing_id:
+            raise ValueError("sale lifecycle requires listing_id")
+        object.__setattr__(self, "listing_id", listing_id)
+        object.__setattr__(self, "state", SaleLifecycleState(self.state))
+        object.__setattr__(self, "provenance", tuple(dict.fromkeys(self.provenance))[:32])
+
+
+@dataclass(frozen=True, slots=True)
+class MarketplaceLifecycleTransition:
+    lifecycle: MarketplaceSaleLifecycle
+    required_action: str
+    action_state: ActionState
+    financial_action: bool
+    payment_observation_only: bool
+
+    def __post_init__(self) -> None:
+        if self.financial_action:
+            raise ValueError("marketplace lifecycle cannot initiate financial actions")
+        object.__setattr__(self, "required_action", _clean_identifier(self.required_action, 80))
+        object.__setattr__(self, "financial_action", False)
+
+
+def apply_marketplace_event(
+    lifecycle: MarketplaceSaleLifecycle,
+    event: NormalizedEvent,
+) -> MarketplaceLifecycleTransition:
+    expected_ref = f"listing:{lifecycle.listing_id}"
+    listing_refs = tuple(ref for ref in event.subject_refs if ref.startswith("listing:"))
+    if listing_refs and expected_ref not in listing_refs:
+        return MarketplaceLifecycleTransition(
+            lifecycle,
+            "verify_listing",
+            ActionState.VERIFY,
+            False,
+            event.event_type == "marketplace_payment",
+        )
+    transitions: dict[str, tuple[SaleLifecycleState, str, ActionState]] = {
+        "marketplace_offer": (
+            SaleLifecycleState.NEGOTIATING,
+            "review_offer",
+            ActionState.USER_DECISION,
+        ),
+        "marketplace_sale": (
+            SaleLifecycleState.SOLD_PAYMENT_PENDING,
+            "wait_for_payment",
+            ActionState.WAIT_FOR_OTHER_PARTY,
+        ),
+        "marketplace_payment": (
+            SaleLifecycleState.PAID_SHIP_REQUIRED,
+            "ship_item",
+            ActionState.USER_DECISION,
+        ),
+        "marketplace_shipping": (
+            SaleLifecycleState.SHIPPED,
+            "track_shipping",
+            ActionState.READ_ONLY,
+        ),
+        "marketplace_completion": (
+            SaleLifecycleState.COMPLETED,
+            "",
+            ActionState.NO_ACTION,
+        ),
+    }
+    target = transitions.get(event.event_type)
+    if target is None:
+        return MarketplaceLifecycleTransition(
+            lifecycle,
+            "",
+            ActionState.NO_ACTION,
+            False,
+            False,
+        )
+    next_state, required_action, action_state = target
+    chain = tuple(dict.fromkeys((*lifecycle.provenance, *event.provenance)))[:32]
+    updated = MarketplaceSaleLifecycle(lifecycle.listing_id, next_state, chain)
+    return MarketplaceLifecycleTransition(
+        updated,
+        required_action,
+        action_state,
+        False,
+        event.event_type == "marketplace_payment",
+    )
