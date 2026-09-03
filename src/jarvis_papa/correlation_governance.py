@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from enum import StrEnum
 
-from jarvis_papa.situations import ProvenanceRef
+from .situations import ProvenanceRef
 
 
 _SECRET_KEYS = {
@@ -34,7 +33,7 @@ def _norm(value: str) -> str:
     return " ".join(value.casefold().strip().split())
 
 
-def _sanitize_metadata(metadata: Mapping[str, str] | None) -> dict[str, str]:
+def _sanitize_metadata(metadata: dict[str, str] | None) -> dict[str, str]:
     if not metadata:
         return {}
     clean: dict[str, str] = {}
@@ -155,7 +154,7 @@ class RelationStore:
         *,
         actor: str,
         provenance: ProvenanceRef | tuple[ProvenanceRef, ...],
-        metadata: Mapping[str, str] | None = None,
+        metadata: dict[str, str] | None = None,
     ) -> None:
         refs = provenance if isinstance(provenance, tuple) else (provenance,)
         self._audit.append(
@@ -218,7 +217,7 @@ class RelationStore:
         *,
         actor: str,
         provenance: ProvenanceRef,
-        metadata: Mapping[str, str] | None = None,
+        metadata: dict[str, str] | None = None,
     ) -> RelationRecord:
         current = self.get(relation_id)
         if decision is RelationReviewDecision.CONFIRM:
