@@ -61,14 +61,16 @@ class ReferentContext:
                     "visible_context",
                     "Référence comprise depuis les éléments affichés.",
                 )
-        if normalized in {"celui-là", "celui la", "celle-là", "celle la"}:
-            if len(self.visible_entity_ids) == 1:
-                return ReferentResolution(
-                    self.visible_entity_ids[0],
-                    True,
-                    "visible_context",
-                    "Référence comprise depuis l’élément affiché.",
-                )
+        if (
+            normalized in {"celui-là", "celui la", "celle-là", "celle la"}
+            and len(self.visible_entity_ids) == 1
+        ):
+            return ReferentResolution(
+                self.visible_entity_ids[0],
+                True,
+                "visible_context",
+                "Référence comprise depuis l’élément affiché.",
+            )
         return ReferentResolution(
             "",
             False,
