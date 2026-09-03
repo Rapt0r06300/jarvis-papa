@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import re
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass
 from email.utils import parseaddr
 from enum import StrEnum
 
