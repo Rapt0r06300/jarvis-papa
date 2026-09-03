@@ -56,6 +56,7 @@ target-version = "py312"
 "src/jarvis_papa/conversation.py" = ["I001"]
 "src/jarvis_papa/correlation_governance.py" = ["I001"]
 "src/jarvis_papa/dashboard.py" = ["I001"]
+"src/jarvis_papa/decision_cards.py" = ["I001"]
 "src/jarvis_papa/desktop_app.py" = ["BLE001", "RUF100", "UP035"]
 "src/jarvis_papa/email_intelligence.py" = ["I001"]
 "src/jarvis_papa/fusion_context.py" = ["I001"]
